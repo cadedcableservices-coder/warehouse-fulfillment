@@ -194,8 +194,13 @@ async function handleApi(request, env, url) {
       if (!run) return bad("Run not found.", 404);
       if (run.committed) return bad("Run already committed.");
       const allocs = (await db.prepare("SELECT * FROM allocations WHERE run_id=?").bind(+b.run_id).all()).results || [];
-      const stmts = allocs.map((a) =>
-        db.prepare("UPDATE jb_lines SET qty_fulfilled = qty_fulfilled + ? WHERE jb_id=? AND item_number=?").bind(a.qty_allocated, a.jb_id, a.item_number));
+      const stmts = [];
+      for (const a of allocs) {
+        // Mark placed against the JB...
+        stmts.push(db.prepare("UPDATE jb_lines SET qty_fulfilled = qty_fulfilled + ? WHERE jb_id=? AND item_number=?").bind(a.qty_allocated, a.jb_id, a.item_number));
+        // ...and remove from on-hand inventory (live running balance, floored at 0).
+        stmts.push(db.prepare("UPDATE inventory SET qty_available = MAX(0, qty_available - ?), updated_at = datetime('now') WHERE UPPER(TRIM(item_number)) = UPPER(TRIM(?))").bind(a.qty_allocated, a.item_number));
+      }
       stmts.push(db.prepare("UPDATE runs SET committed=1 WHERE id=?").bind(+b.run_id));
       if (stmts.length) await db.batch(stmts);
       return json({ ok: true });
@@ -203,6 +208,23 @@ async function handleApi(request, env, url) {
 
     if (route === "report" && method === "GET") return json(await getReport(db));
     if (route === "run" && method === "GET" && parts[1]) return json(await getRun(db, +parts[1]));
+
+    if (route === "inventory" && method === "GET") {
+      const items = (await db.prepare("SELECT item_number, description, qty_available, updated_at FROM inventory ORDER BY item_number").all()).results || [];
+      return json({ items });
+    }
+    if (route === "history" && method === "GET") {
+      const runs = (await db.prepare(
+        `SELECT r.id, r.created_at, r.created_by,
+                COUNT(a.id) AS line_count,
+                COALESCE(SUM(a.qty_allocated),0) AS total_qty,
+                COUNT(DISTINCT a.jb_id) AS jb_count
+         FROM runs r LEFT JOIN allocations a ON a.run_id = r.id
+         WHERE r.committed = 1
+         GROUP BY r.id ORDER BY r.id DESC`
+      ).all()).results || [];
+      return json({ runs });
+    }
 
     return bad("Unknown route: /api/" + parts.join("/"), 404);
   } catch (err) {

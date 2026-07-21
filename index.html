@@ -109,8 +109,10 @@
     <!-- ============ REPORTS TAB ============ -->
     <section id="tab-reports" style="display:none;">
       <div class="row noprint" style="margin-bottom:14px;">
-        <button class="big neutral" onclick="loadReport()">↻ Refresh</button>
-        <button class="big neutral" onclick="window.print()">🖨 Print</button>
+        <button id="rb-status" class="big primary" onclick="repView('status')">JB Status</button>
+        <button id="rb-inv" class="big neutral" onclick="repView('inventory')">Inventory</button>
+        <button id="rb-hist" class="big neutral" onclick="repView('history')">History</button>
+        <button class="big neutral" onclick="window.print()" style="margin-left:auto">🖨 Print</button>
       </div>
       <div id="reportBody"><p class="muted">Loading…</p></div>
     </section>
@@ -185,7 +187,7 @@ function startApp() {
 function showTab(t) {
   ["run","reports","setup"].forEach(x => document.getElementById("tab-"+x).style.display = x===t ? "block":"none");
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab===t));
-  if (t==="reports") loadReport();
+  if (t==="reports") repView(REP_VIEW);
   if (t==="setup") renderSetup();
 }
 
@@ -310,9 +312,9 @@ function renderPickList(res) {
 }
 
 async function commitRun(runId) {
-  if (!confirm("Commit this run? This records the items as placed and reduces remaining need.")) return;
+  if (!confirm("Commit this run? This marks the items as placed, reduces each JB's remaining need, and removes them from on-hand inventory.")) return;
   try { await api("/commit", { method:"POST", body: JSON.stringify({ run_id: runId }) });
-    flash("Committed. Remaining needs updated.", "info"); refreshState();
+    flash("Committed. Remaining needs and on-hand inventory updated.", "info"); refreshState();
   } catch (e) { flash(e.message, "err"); }
 }
 
@@ -393,38 +395,113 @@ async function savePriorities() {
 }
 
 // ---------- reports ----------
-async function loadReport() {
-  const el = document.getElementById("reportBody");
-  el.innerHTML = '<p class="muted">Loading…</p>';
+let REP_VIEW = "status";
+function nfmt(x){ const v = Math.round((Number(x)||0)*100)/100; return v.toLocaleString(); }
+function bar(pct, label){
+  return '<div style="margin:6px 0 16px"><div class="muted" style="margin-bottom:4px">' + label + ': <b>' + pct + '%</b></div>'
+    + '<div style="background:#eaeef2;border-radius:20px;height:14px;overflow:hidden"><div style="width:' + pct + '%;height:100%;background:' + (pct>=100?"var(--green)":"var(--blue)") + '"></div></div></div>';
+}
+function repView(v){
+  REP_VIEW = v;
+  [["rb-status","status"],["rb-inv","inventory"],["rb-hist","history"]].forEach(([id,val])=>{
+    const b = document.getElementById(id); if (b) b.className = "big " + (val===v?"primary":"neutral");
+  });
+  if (v==="inventory") loadInventory();
+  else if (v==="history") loadHistory();
+  else loadStatus();
+}
+
+async function loadStatus() {
+  const el = document.getElementById("reportBody"); el.innerHTML = '<p class="muted">Loading…</p>';
   try {
     const rep = await api("/report");
     if (!rep.projects.length) { el.innerHTML = '<p class="muted">No projects yet.</p>'; return; }
-    let h = '<div class="print-title"><h2>Materials Report</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
+    let h = '<div class="print-title"><h2>Project Status Report</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
     for (const p of rep.projects) {
+      let pn=0, pf=0; for (const t of p.totals){ pn+=t.needed; pf+=t.fulfilled; }
+      const ppct = pn>0 ? Math.round(pf/pn*100) : 0;
       h += '<div class="card"><h2>' + esc(p.project_name) + '</h2>';
-      h += '<h3>Whole-project totals</h3>';
-      h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Fulfilled</th><th>Still needed</th><th></th></tr></thead><tbody>';
-      for (const t of p.totals) {
-        const short = t.remaining > 0;
-        h += '<tr><td>' + esc(t.item_number) + '</td><td>' + esc(t.description) + '</td><td>' + n(t.needed) + '</td><td>' + n(t.fulfilled) + '</td>'
-          + '<td><b>' + n(t.remaining) + '</b></td><td>' + (short?'<span class="pill short">short</span>':'<span class="pill ok">done</span>') + '</td></tr>';
-      }
-      if (!p.totals.length) h += '<tr><td colspan="6" class="muted">No material lines uploaded yet.</td></tr>';
-      h += '</tbody></table>';
-      h += '<h3 style="margin-top:18px">Still needed per JB</h3>';
+      h += bar(ppct, 'Whole project shipped');
+      // JB completion summary
+      h += '<h3>JB completion</h3><table><thead><tr><th>JB</th><th>Items</th><th>Shipped</th><th>Still needed</th><th>Complete</th></tr></thead><tbody>';
       for (const jb of p.jbs) {
-        const open = jb.items.filter(i => i.remaining > 0);
+        let n2=0,f2=0; for (const it of jb.items){ n2+=it.needed; f2+=it.fulfilled; }
+        const rem=n2-f2, pct=n2>0?Math.round(f2/n2*100):100;
+        h += '<tr><td><b>' + esc(jb.jb_number) + '</b></td><td>' + jb.items.length + '</td><td>' + nfmt(f2) + '</td><td>' + nfmt(rem) + '</td><td>' + pct + '% ' + (rem<=0?'<span class="pill ok">done</span>':'') + '</td></tr>';
+      }
+      h += '</tbody></table>';
+      // per-JB item detail: shipped vs still needed
+      h += '<h3 style="margin-top:18px">Shipped vs. still needed, by JB</h3>';
+      for (const jb of p.jbs) {
         h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b>';
-        if (!open.length) { h += ' <span class="pill ok">fully fulfilled</span></div>'; continue; }
-        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Fulfilled</th><th>Still needed</th></tr></thead><tbody>';
-        for (const it of open)
-          h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td>' + n(it.needed) + '</td><td>' + n(it.fulfilled) + '</td><td><b>' + n(it.remaining) + '</b></td></tr>';
+        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Shipped</th><th>Still needed</th></tr></thead><tbody>';
+        for (const it of jb.items) {
+          const short = it.remaining > 0;
+          h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td>' + nfmt(it.needed) + '</td><td>' + nfmt(it.fulfilled) + '</td><td>' + (short?'<b>'+nfmt(it.remaining)+'</b>':'<span class="pill ok">shipped</span>') + '</td></tr>';
+        }
+        if (!jb.items.length) h += '<tr><td colspan="5" class="muted">No bill uploaded yet.</td></tr>';
         h += '</tbody></table></div>';
       }
       h += '</div>';
     }
     el.innerHTML = h;
   } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
+}
+
+async function loadInventory() {
+  const el = document.getElementById("reportBody"); el.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const d = await api("/inventory");
+    let h = '<div class="print-title"><h2>On-hand Inventory</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
+    h += '<div class="card"><h2>Live on-hand inventory</h2>';
+    if (!d.items.length) { h += '<p class="muted">No inventory loaded yet. Upload a truck / inventory sheet on the Run Fulfillment tab.</p></div>'; el.innerHTML = h; return; }
+    h += '<p class="sub">Updates automatically as pick lists are committed.</p>';
+    h += '<table><thead><tr><th>Item #</th><th>Description</th><th>On hand</th><th>Status</th></tr></thead><tbody>';
+    for (const it of d.items) {
+      const q = Number(it.qty_available)||0;
+      const st = q<=0 ? '<span class="pill short">out</span>' : (q<10 ? '<span class="pill" style="background:#fff8c5;color:#7d4e00">low</span>' : '<span class="pill ok">ok</span>');
+      h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description||"") + '</td><td><b>' + nfmt(q) + '</b></td><td>' + st + '</td></tr>';
+    }
+    h += '</tbody></table></div>';
+    el.innerHTML = h;
+  } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
+}
+
+async function loadHistory() {
+  const el = document.getElementById("reportBody"); el.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const d = await api("/history");
+    let h = '<div class="card noprint"><h2>Pick / ship history</h2>';
+    if (!d.runs.length) { h += '<p class="muted">No committed runs yet. Run an allocation and Commit it to record a shipment.</p></div>'; el.innerHTML = h; return; }
+    h += '<table><thead><tr><th>When</th><th>By</th><th>JBs</th><th>Items</th><th>Total qty</th><th></th></tr></thead><tbody>';
+    for (const r of d.runs) {
+      h += '<tr><td>' + esc(r.created_at) + '</td><td>' + esc(r.created_by||"—") + '</td><td>' + r.jb_count + '</td><td>' + r.line_count + '</td><td>' + nfmt(r.total_qty) + '</td>'
+        + '<td><button class="neutral" style="padding:5px 10px;border-radius:6px" onclick="viewRun(' + r.id + ')">View / reprint</button></td></tr>';
+    }
+    h += '</tbody></table></div><div id="runDetail"></div>';
+    el.innerHTML = h;
+  } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
+}
+
+async function viewRun(id) {
+  try {
+    const res = await api("/run/" + id);
+    let h = '<div class="card">';
+    h += '<div class="print-title"><h2>Fulfillment Pick List</h2></div>';
+    h += '<div class="row noprint" style="justify-content:space-between"><h2>Run #' + id + ' — ' + esc(res.run?res.run.created_at:"") + '</h2><button class="big neutral" onclick="window.print()">🖨 Print</button></div>';
+    if (!res.pick_list.length) h += '<p class="muted">No lines.</p>';
+    for (const p of res.pick_list) {
+      h += '<h3 style="margin:14px 0 6px">' + esc(p.project_name) + '</h3>';
+      for (const jb of p.jbs) {
+        h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b><table><thead><tr><th>Item #</th><th>Description</th><th style="text-align:right">Qty placed</th></tr></thead><tbody>';
+        for (const it of jb.items) h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td style="text-align:right"><b>' + nfmt(it.qty) + '</b></td></tr>';
+        h += '</tbody></table></div>';
+      }
+    }
+    h += '</div>';
+    document.getElementById("runDetail").innerHTML = h;
+    document.getElementById("runDetail").scrollIntoView({ behavior:"smooth" });
+  } catch (e) { flash(e.message, "err"); }
 }
 
 // ---------- boot ----------
