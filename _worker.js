@@ -152,13 +152,14 @@ async function handleApi(request, env, url) {
       const merged = new Map();
       for (const ln of lines) {
         const key = normalizeItem(ln.item_number); if (!key) continue;
-        const prev = merged.get(key) || { item_number: String(ln.item_number).trim(), description: ln.description || "", qty: 0 };
+        const prev = merged.get(key) || { item_number: String(ln.item_number).trim(), description: ln.description || "", qty: 0, fulfilled: 0 };
         prev.qty += num(ln.qty_needed, 0);
+        prev.fulfilled += num(ln.qty_fulfilled, 0);
         if (!prev.description && ln.description) prev.description = ln.description;
         merged.set(key, prev);
       }
       for (const m of merged.values())
-        stmts.push(db.prepare("INSERT INTO jb_lines (jb_id, item_number, description, qty_needed) VALUES (?,?,?,?)").bind(+jbId, m.item_number, m.description, m.qty));
+        stmts.push(db.prepare("INSERT INTO jb_lines (jb_id, item_number, description, qty_needed, qty_fulfilled) VALUES (?,?,?,?,?)").bind(+jbId, m.item_number, m.description, m.qty, m.fulfilled));
       await db.batch(stmts);
       return json({ ok: true, jb_id: jbId, lines: merged.size });
     }

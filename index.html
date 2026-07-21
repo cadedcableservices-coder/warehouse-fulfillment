@@ -190,39 +190,62 @@ function showTab(t) {
 }
 
 // ---------- Excel parsing ----------
-function readSheet(file) {
+// Read the first worksheet as an array of rows (so we can skip preamble rows).
+function readSheetRows(file) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onload = e => {
       try {
         const wb = XLSX.read(new Uint8Array(e.target.result), { type:"array" });
         const ws = wb.Sheets[wb.SheetNames[0]];
-        resolve(XLSX.utils.sheet_to_json(ws, { defval:"" }));
+        resolve(XLSX.utils.sheet_to_json(ws, { header:1, defval:"", blankrows:false }));
       } catch (err) { reject(err); }
     };
     fr.onerror = reject;
     fr.readAsArrayBuffer(file);
   });
 }
-// Flexible column detection from the first row's keys.
-function pickCols(rows) {
-  if (!rows.length) return null;
-  const keys = Object.keys(rows[0]);
-  const find = (tests) => keys.find(k => { const s=k.toLowerCase(); return tests.some(t=>s.includes(t)); });
-  return {
-    item: find(["item","part","sku","material","stock"]),
-    desc: find(["desc","name"]),
-    qty:  find(["needed","need","required","qty","quantity","avail","count","on hand","onhand"]),
-  };
+// Find the header row (may not be row 1) and the columns we care about.
+function detectColumns(rows) {
+  const itemPat = ["cifa","item number","item","part","sku","material","stock","catalog"];
+  const qtyPat  = ["quantity","qty","needed","required","avail","count","on hand","onhand"];
+  const descPat = ["description","desc","name"];
+  const fulPat  = ["pulled","fulfilled","picked","allocated","placed"];
+  const hit = (cell, pats) => { const s = String(cell == null ? "" : cell).trim().toLowerCase(); return s && pats.some(p => s === p || s.includes(p)); };
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const row = rows[i] || [];
+    let item = -1, qty = -1, desc = -1, ful = -1;
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      if (item < 0 && hit(cell, itemPat)) { item = c; continue; }
+      if (qty < 0 && hit(cell, qtyPat)) { qty = c; continue; }
+      if (desc < 0 && hit(cell, descPat)) desc = c;
+      if (ful < 0 && hit(cell, fulPat)) ful = c;
+    }
+    if (item >= 0 && qty >= 0) return { headerRow: i, item, qty, desc, ful };
+  }
+  return null;
 }
-function rowsToItems(rows, qtyField) {
-  const cols = pickCols(rows);
-  if (!cols || !cols.item || !cols.qty) throw new Error("Could not find an Item and a Quantity column. Use the provided template.");
-  return rows.map(r => ({
-    item_number: String(r[cols.item]).trim(),
-    description: cols.desc ? String(r[cols.desc]).trim() : "",
-    [qtyField]: Number(r[cols.qty]) || 0,
-  })).filter(x => x.item_number);
+const cleanNum = v => Number(String(v == null ? "" : v).replace(/[^0-9.\-]/g, "")) || 0;
+// kind = "inventory" (qty_available) or "jb" (qty_needed + qty_fulfilled)
+function parseRows(rows, kind) {
+  const cols = detectColumns(rows);
+  if (!cols) throw new Error("Could not find an Item and a Quantity column in this file.");
+  const out = [];
+  for (let i = cols.headerRow + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const item = String(r[cols.item] == null ? "" : r[cols.item]).trim();
+    if (!item) continue;
+    const desc = cols.desc >= 0 ? String(r[cols.desc] || "").trim() : "";
+    const qty = cleanNum(r[cols.qty]);
+    if (kind === "inventory") {
+      out.push({ item_number: item, description: desc, qty_available: qty });
+    } else {
+      const ful = cols.ful >= 0 ? cleanNum(r[cols.ful]) : 0;
+      out.push({ item_number: item, description: desc, qty_needed: qty, qty_fulfilled: ful });
+    }
+  }
+  return out;
 }
 
 // ---------- inventory upload ----------
@@ -230,8 +253,8 @@ async function handleInventory(input) {
   const file = input.files[0]; if (!file) return;
   document.getElementById("invStatus").textContent = "Reading " + file.name + " …";
   try {
-    const rows = await readSheet(file);
-    const items = rowsToItems(rows, "qty_available");
+    const rows = await readSheetRows(file);
+    const items = parseRows(rows, "inventory");
     const res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
     document.getElementById("invStatus").innerHTML = "✅ Loaded <b>" + res.items + "</b> items from " + esc(file.name);
     flash("Inventory updated — " + res.items + " items.", "info");
@@ -353,8 +376,8 @@ async function delJB(id){ if(!confirm("Delete this JB and its bill?"))return;
 async function uploadJB(jbId, input) {
   const file = input.files[0]; if (!file) return;
   try {
-    const rows = await readSheet(file);
-    const lines = rowsToItems(rows, "qty_needed");
+    const rows = await readSheetRows(file);
+    const lines = parseRows(rows, "jb");
     const res = await api("/jb-upload", { method:"POST", body: JSON.stringify({ jb_id: jbId, lines }) });
     flash("Loaded " + res.lines + " material lines.", "info"); refreshState();
   } catch (e) { flash(e.message, "err"); }
