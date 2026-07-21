@@ -60,6 +60,7 @@
   <div class="card">
     <h2>Warehouse Fulfillment</h2>
     <p class="sub">Enter the password to continue.</p>
+    <input id="who" type="text" placeholder="Your name (optional)" style="width:100%;margin-bottom:10px" />
     <div class="row">
       <input id="pw" type="password" placeholder="Password" style="flex:1" />
       <button class="big primary" onclick="doLogin()">Enter</button>
@@ -162,11 +163,12 @@ function n(x){ const v=Number(x)||0; return Math.round(v*100)/100; }
 // ---------- login ----------
 async function doLogin() {
   const pw = document.getElementById("pw").value;
+  const whoField = document.getElementById("who");
+  if (whoField && whoField.value.trim()) { WHO = whoField.value.trim(); localStorage.setItem("wf_who", WHO); }
   try {
     await fetch(API + "/login", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ password: pw }) })
       .then(r => { if (!r.ok) throw new Error("Wrong password."); });
     PW = pw; localStorage.setItem("wf_pw", pw);
-    if (!WHO) { WHO = prompt("Your name (for the records):") || ""; localStorage.setItem("wf_who", WHO); }
     startApp();
   } catch (e) {
     const el = document.getElementById("loginErr"); el.style.display="block"; el.textContent = e.message;
