@@ -432,21 +432,20 @@ async function loadStatus() {
         h += '<tr><td><b>' + esc(jb.jb_number) + '</b></td><td>' + done + ' / ' + tot + '</td><td>' + nfmt(f2) + '</td><td>' + nfmt(rem) + '</td><td>' + pct + '% ' + (rem<=0?'<span class="pill ok">done</span>':'') + '</td></tr>';
       }
       h += '</tbody></table>';
-      // per-JB item detail: shipped vs still needed (editable quantities)
+      // per-JB item detail: shipped vs still needed (click Edit to adjust)
       h += '<h3 style="margin-top:18px">Shipped vs. still needed, by JB</h3>';
-      h += '<p class="muted noprint" style="margin-top:-6px">Tip: edit the Needed or Shipped boxes and press Save. (Editing Shipped here adjusts the record only — it does not change on-hand inventory.)</p>';
+      h += '<p class="muted noprint" style="margin-top:-6px">Click <b>Edit</b> on a row to adjust its Needed or Shipped quantity.</p>';
       for (const jb of p.jbs) {
         h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b>';
-        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Shipped</th><th>Still needed</th><th class="noprint"></th></tr></thead><tbody>';
+        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Shipped</th><th>Still needed</th><th class="noprint" style="width:80px"></th></tr></thead><tbody>';
         for (const it of jb.items) {
           const short = it.remaining > 0;
-          h += '<tr data-jb="' + jb.jb_id + '" data-item="' + esc(it.item_number) + '">'
+          h += '<tr data-jb="' + jb.jb_id + '" data-item="' + esc(it.item_number) + '" data-need="' + it.needed + '" data-ship="' + it.fulfilled + '">'
             + '<td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td>'
-            + '<td><input type="number" class="jl-need" value="' + it.needed + '" style="width:90px"></td>'
-            + '<td><input type="number" class="jl-ship" value="' + it.fulfilled + '" style="width:90px"></td>'
-            + '<td>' + (short?'<b>'+nfmt(it.remaining)+'</b>':'<span class="pill ok">shipped</span>') + '</td>'
-            + '<td class="noprint"><button class="success" style="padding:5px 10px;border-radius:6px" onclick="jlSave(this)">Save</button> '
-            + '<button class="danger" style="padding:5px 10px;border-radius:6px" onclick="jlDelete(this)">✕</button></td></tr>';
+            + '<td class="c-need">' + nfmt(it.needed) + '</td>'
+            + '<td class="c-ship">' + nfmt(it.fulfilled) + '</td>'
+            + '<td class="c-rem">' + (short?'<b>'+nfmt(it.remaining)+'</b>':'<span class="pill ok">shipped</span>') + '</td>'
+            + '<td class="noprint c-act"><button class="neutral" style="padding:4px 12px;border-radius:6px;font-size:13px" onclick="jlEdit(this)">Edit</button></td></tr>';
         }
         if (!jb.items.length) h += '<tr><td colspan="6" class="muted">No bill uploaded yet.</td></tr>';
         h += '</tbody></table></div>';
@@ -457,6 +456,15 @@ async function loadStatus() {
   } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
 }
 
+function jlEdit(btn) {
+  const tr = btn.closest("tr");
+  tr.querySelector(".c-need").innerHTML = '<input type="number" class="jl-need" value="' + tr.getAttribute("data-need") + '" style="width:90px">';
+  tr.querySelector(".c-ship").innerHTML = '<input type="number" class="jl-ship" value="' + tr.getAttribute("data-ship") + '" style="width:90px">';
+  tr.querySelector(".c-act").innerHTML =
+      '<button class="success" style="padding:4px 10px;border-radius:6px;font-size:13px" onclick="jlSave(this)">Save</button> '
+    + '<button class="neutral" style="padding:4px 10px;border-radius:6px;font-size:13px" onclick="loadStatus()">Cancel</button> '
+    + '<button class="danger" style="padding:4px 8px;border-radius:6px;font-size:13px" onclick="jlDelete(this)">✕</button>';
+}
 async function jlSave(btn) {
   const tr = btn.closest("tr");
   const jb_id = +tr.getAttribute("data-jb"), item_number = tr.getAttribute("data-item");
@@ -484,25 +492,33 @@ async function loadInventory() {
     // add-item row
     h += '<div class="row noprint" style="margin-bottom:12px"><input id="ni_item" type="text" placeholder="Item #" style="width:120px"><input id="ni_desc" type="text" placeholder="Description" style="flex:1;min-width:160px"><input id="ni_qty" type="number" placeholder="Qty" style="width:90px"><button class="primary" style="padding:8px 14px;border-radius:7px" onclick="invAdd()">＋ Add item</button></div>';
     if (!d.items.length) { h += '<p class="muted">No inventory loaded yet. Upload a truck / inventory sheet on the Run Fulfillment tab, or add items above.</p></div>'; el.innerHTML = h; return; }
-    h += '<table><thead><tr><th>Item #</th><th>Description</th><th>On hand</th><th>Status</th><th class="noprint"></th></tr></thead><tbody>';
+    h += '<p class="muted noprint" style="margin-top:-6px">Click <b>Edit</b> on a row to adjust its on-hand quantity.</p>';
+    h += '<table><thead><tr><th>Item #</th><th>Description</th><th>On hand</th><th>Status</th><th class="noprint" style="width:80px"></th></tr></thead><tbody>';
     for (const it of d.items) {
       const q = Number(it.qty_available)||0;
       const st = q<=0 ? '<span class="pill short">out</span>' : (q<10 ? '<span class="pill" style="background:#fff8c5;color:#7d4e00">low</span>' : '<span class="pill ok">ok</span>');
-      h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description||"") + '</td>'
-        + '<td><input type="number" value="' + q + '" data-inv="' + esc(it.item_number) + '" style="width:100px"></td>'
-        + '<td>' + st + '</td>'
-        + '<td class="noprint"><button class="success" style="padding:5px 10px;border-radius:6px" onclick="invSave(this)">Save</button> '
-        + '<button class="danger" style="padding:5px 10px;border-radius:6px" onclick="invDelete(this)">✕</button></td></tr>';
+      h += '<tr data-inv="' + esc(it.item_number) + '" data-qty="' + q + '"><td>' + esc(it.item_number) + '</td><td>' + esc(it.description||"") + '</td>'
+        + '<td class="c-q"><b>' + nfmt(q) + '</b></td>'
+        + '<td class="c-st">' + st + '</td>'
+        + '<td class="noprint c-act"><button class="neutral" style="padding:4px 12px;border-radius:6px;font-size:13px" onclick="invEdit(this)">Edit</button></td></tr>';
     }
     h += '</tbody></table></div>';
     el.innerHTML = h;
   } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
 }
-async function invSave(btn) {
-  const inp = btn.closest("tr").querySelector("[data-inv]");
-  const item = inp.getAttribute("data-inv"), qty = Number(inp.value)||0;
+function invEdit(btn) {
+  const tr = btn.closest("tr");
+  tr.querySelector(".c-q").innerHTML = '<input type="number" class="jl-q" value="' + tr.getAttribute("data-qty") + '" style="width:100px">';
+  tr.querySelector(".c-act").innerHTML =
+      '<button class="success" style="padding:4px 10px;border-radius:6px;font-size:13px" onclick="invSaveRow(this)">Save</button> '
+    + '<button class="neutral" style="padding:4px 10px;border-radius:6px;font-size:13px" onclick="loadInventory()">Cancel</button> '
+    + '<button class="danger" style="padding:4px 8px;border-radius:6px;font-size:13px" onclick="invDelete(this)">✕</button>';
+}
+async function invSaveRow(btn) {
+  const tr = btn.closest("tr");
+  const item = tr.getAttribute("data-inv"), qty = Number(tr.querySelector(".jl-q").value)||0;
   try { await api("/inventory-set", { method:"POST", body: JSON.stringify({ item_number:item, qty_available:qty }) });
-    flash("Saved " + item + " = " + qty + " on hand.", "info");
+    flash("Saved " + item + " = " + qty + " on hand.", "info"); loadInventory();
   } catch (e) { flash(e.message, "err"); }
 }
 async function invAdd() {
@@ -515,7 +531,7 @@ async function invAdd() {
   } catch (e) { flash(e.message, "err"); }
 }
 async function invDelete(btn) {
-  const item = btn.closest("tr").querySelector("[data-inv]").getAttribute("data-inv");
+  const item = btn.closest("tr").getAttribute("data-inv");
   if (!confirm("Remove " + item + " from inventory?")) return;
   try { await api("/inventory-delete", { method:"POST", body: JSON.stringify({ item_number:item }) });
     flash("Removed " + item + ".", "info"); loadInventory();
