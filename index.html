@@ -258,9 +258,9 @@ async function handleInventory(input) {
     const rows = await readSheetRows(file);
     const items = parseRows(rows, "inventory");
     const res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
-    document.getElementById("invStatus").innerHTML = "✅ Loaded <b>" + res.items + "</b> items from " + esc(file.name);
-    flash("Inventory updated — " + res.items + " items.", "info");
+    document.getElementById("invStatus").innerHTML = "✅ Loaded <b>" + res.items + "</b> items from " + esc(file.name) + ". Building the proposed pick list…";
     refreshState();
+    await runAllocation();   // auto-propose what to pick and where; nothing applied until approved
   } catch (e) {
     document.getElementById("invStatus").innerHTML = '<span style="color:#cf222e">❌ ' + esc(e.message) + "</span>";
   }
@@ -274,7 +274,7 @@ async function runAllocation() {
     const res = await api("/allocate", { method:"POST", body: JSON.stringify({ created_by: WHO }) });
     LAST_RUN = res;
     renderPickList(res);
-    flash("Allocation complete. Review the pick list below, print it, then Commit when placed.", "info");
+    flash("Proposed pick list ready below. Review it, print for the team, then Approve & apply.", "info");
     refreshState();
   } catch (e) { flash(e.message, "err"); }
 }
@@ -287,9 +287,10 @@ function renderPickList(res) {
   }
   let h = '<div class="card">';
   h += '<div class="print-title"><h2>Fulfillment Pick List</h2><p class="muted">Run #' + res.run_id + ' — ' + new Date().toLocaleString() + (WHO?(" — "+esc(WHO)):"") + '</p></div>';
-  h += '<div class="row noprint" style="justify-content:space-between;"><h2>Pick List — where each item goes</h2>'
+  h += '<div class="row noprint" style="justify-content:space-between;">'
+    + '<div><h2 style="margin:0">Proposed pick list — where each item goes</h2><p class="muted" style="margin:3px 0 0">Review this, then Approve &amp; apply. Nothing changes in reporting or inventory until you approve.</p></div>'
     + '<div class="row"><button class="big neutral" onclick="window.print()">🖨 Print for team</button>'
-    + '<button class="big success" onclick="commitRun(' + res.run_id + ')">✔ Commit (mark as placed)</button></div></div>';
+    + '<button class="big success" onclick="commitRun(' + res.run_id + ')">✔ Approve &amp; apply</button></div></div>';
 
   for (const p of res.pick_list) {
     h += '<h3 style="margin:18px 0 6px">' + esc(p.project_name) + '</h3>';
@@ -312,9 +313,9 @@ function renderPickList(res) {
 }
 
 async function commitRun(runId) {
-  if (!confirm("Commit this run? This marks the items as placed, reduces each JB's remaining need, and removes them from on-hand inventory.")) return;
+  if (!confirm("Approve and apply this pick list? It will mark the items shipped to each JB and remove them from on-hand inventory.")) return;
   try { await api("/commit", { method:"POST", body: JSON.stringify({ run_id: runId }) });
-    flash("Committed. Remaining needs and on-hand inventory updated.", "info"); refreshState();
+    flash("Applied. Reporting and on-hand inventory updated.", "info"); refreshState();
   } catch (e) { flash(e.message, "err"); }
 }
 
@@ -455,17 +456,46 @@ async function loadInventory() {
     const d = await api("/inventory");
     let h = '<div class="print-title"><h2>On-hand Inventory</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
     h += '<div class="card"><h2>Live on-hand inventory</h2>';
-    if (!d.items.length) { h += '<p class="muted">No inventory loaded yet. Upload a truck / inventory sheet on the Run Fulfillment tab.</p></div>'; el.innerHTML = h; return; }
-    h += '<p class="sub">Updates automatically as pick lists are committed.</p>';
-    h += '<table><thead><tr><th>Item #</th><th>Description</th><th>On hand</th><th>Status</th></tr></thead><tbody>';
+    h += '<p class="sub">Updates automatically as pick lists are approved. You can also adjust quantities by hand here.</p>';
+    // add-item row
+    h += '<div class="row noprint" style="margin-bottom:12px"><input id="ni_item" type="text" placeholder="Item #" style="width:120px"><input id="ni_desc" type="text" placeholder="Description" style="flex:1;min-width:160px"><input id="ni_qty" type="number" placeholder="Qty" style="width:90px"><button class="primary" style="padding:8px 14px;border-radius:7px" onclick="invAdd()">＋ Add item</button></div>';
+    if (!d.items.length) { h += '<p class="muted">No inventory loaded yet. Upload a truck / inventory sheet on the Run Fulfillment tab, or add items above.</p></div>'; el.innerHTML = h; return; }
+    h += '<table><thead><tr><th>Item #</th><th>Description</th><th>On hand</th><th>Status</th><th class="noprint"></th></tr></thead><tbody>';
     for (const it of d.items) {
       const q = Number(it.qty_available)||0;
       const st = q<=0 ? '<span class="pill short">out</span>' : (q<10 ? '<span class="pill" style="background:#fff8c5;color:#7d4e00">low</span>' : '<span class="pill ok">ok</span>');
-      h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description||"") + '</td><td><b>' + nfmt(q) + '</b></td><td>' + st + '</td></tr>';
+      h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description||"") + '</td>'
+        + '<td><input type="number" value="' + q + '" data-inv="' + esc(it.item_number) + '" style="width:100px"></td>'
+        + '<td>' + st + '</td>'
+        + '<td class="noprint"><button class="success" style="padding:5px 10px;border-radius:6px" onclick="invSave(this)">Save</button> '
+        + '<button class="danger" style="padding:5px 10px;border-radius:6px" onclick="invDelete(this)">✕</button></td></tr>';
     }
     h += '</tbody></table></div>';
     el.innerHTML = h;
   } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
+}
+async function invSave(btn) {
+  const inp = btn.closest("tr").querySelector("[data-inv]");
+  const item = inp.getAttribute("data-inv"), qty = Number(inp.value)||0;
+  try { await api("/inventory-set", { method:"POST", body: JSON.stringify({ item_number:item, qty_available:qty }) });
+    flash("Saved " + item + " = " + qty + " on hand.", "info");
+  } catch (e) { flash(e.message, "err"); }
+}
+async function invAdd() {
+  const item = document.getElementById("ni_item").value.trim();
+  const desc = document.getElementById("ni_desc").value.trim();
+  const qty = Number(document.getElementById("ni_qty").value)||0;
+  if (!item) return flash("Enter an item number.", "err");
+  try { await api("/inventory-set", { method:"POST", body: JSON.stringify({ item_number:item, description:desc, qty_available:qty }) });
+    flash("Added " + item + ".", "info"); loadInventory();
+  } catch (e) { flash(e.message, "err"); }
+}
+async function invDelete(btn) {
+  const item = btn.closest("tr").querySelector("[data-inv]").getAttribute("data-inv");
+  if (!confirm("Remove " + item + " from inventory?")) return;
+  try { await api("/inventory-delete", { method:"POST", body: JSON.stringify({ item_number:item }) });
+    flash("Removed " + item + ".", "info"); loadInventory();
+  } catch (e) { flash(e.message, "err"); }
 }
 
 async function loadHistory() {

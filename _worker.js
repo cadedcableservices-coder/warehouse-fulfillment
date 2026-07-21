@@ -213,6 +213,22 @@ async function handleApi(request, env, url) {
       const items = (await db.prepare("SELECT item_number, description, qty_available, updated_at FROM inventory ORDER BY item_number").all()).results || [];
       return json({ items });
     }
+    // Manual inventory edit: upsert one item (used by the editable Inventory report).
+    if (route === "inventory-set" && method === "POST") {
+      const b = await request.json();
+      if (!String(b.item_number || "").trim()) return bad("item_number required.");
+      await db.prepare(
+        "INSERT INTO inventory (item_number, description, qty_available, updated_at) VALUES (?,?,?,datetime('now')) " +
+        "ON CONFLICT(item_number) DO UPDATE SET qty_available=excluded.qty_available, " +
+        "description=COALESCE(NULLIF(excluded.description,''), inventory.description), updated_at=datetime('now')"
+      ).bind(String(b.item_number).trim(), b.description || "", num(b.qty_available, 0)).run();
+      return json({ ok: true });
+    }
+    if (route === "inventory-delete" && method === "POST") {
+      const b = await request.json();
+      await db.prepare("DELETE FROM inventory WHERE item_number = ?").bind(String(b.item_number || "").trim()).run();
+      return json({ ok: true });
+    }
     if (route === "history" && method === "GET") {
       const runs = (await db.prepare(
         `SELECT r.id, r.created_at, r.created_by,
