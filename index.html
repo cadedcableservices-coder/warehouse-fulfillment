@@ -432,16 +432,23 @@ async function loadStatus() {
         h += '<tr><td><b>' + esc(jb.jb_number) + '</b></td><td>' + done + ' / ' + tot + '</td><td>' + nfmt(f2) + '</td><td>' + nfmt(rem) + '</td><td>' + pct + '% ' + (rem<=0?'<span class="pill ok">done</span>':'') + '</td></tr>';
       }
       h += '</tbody></table>';
-      // per-JB item detail: shipped vs still needed
+      // per-JB item detail: shipped vs still needed (editable quantities)
       h += '<h3 style="margin-top:18px">Shipped vs. still needed, by JB</h3>';
+      h += '<p class="muted noprint" style="margin-top:-6px">Tip: edit the Needed or Shipped boxes and press Save. (Editing Shipped here adjusts the record only — it does not change on-hand inventory.)</p>';
       for (const jb of p.jbs) {
         h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b>';
-        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Shipped</th><th>Still needed</th></tr></thead><tbody>';
+        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Shipped</th><th>Still needed</th><th class="noprint"></th></tr></thead><tbody>';
         for (const it of jb.items) {
           const short = it.remaining > 0;
-          h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td>' + nfmt(it.needed) + '</td><td>' + nfmt(it.fulfilled) + '</td><td>' + (short?'<b>'+nfmt(it.remaining)+'</b>':'<span class="pill ok">shipped</span>') + '</td></tr>';
+          h += '<tr data-jb="' + jb.jb_id + '" data-item="' + esc(it.item_number) + '">'
+            + '<td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td>'
+            + '<td><input type="number" class="jl-need" value="' + it.needed + '" style="width:90px"></td>'
+            + '<td><input type="number" class="jl-ship" value="' + it.fulfilled + '" style="width:90px"></td>'
+            + '<td>' + (short?'<b>'+nfmt(it.remaining)+'</b>':'<span class="pill ok">shipped</span>') + '</td>'
+            + '<td class="noprint"><button class="success" style="padding:5px 10px;border-radius:6px" onclick="jlSave(this)">Save</button> '
+            + '<button class="danger" style="padding:5px 10px;border-radius:6px" onclick="jlDelete(this)">✕</button></td></tr>';
         }
-        if (!jb.items.length) h += '<tr><td colspan="5" class="muted">No bill uploaded yet.</td></tr>';
+        if (!jb.items.length) h += '<tr><td colspan="6" class="muted">No bill uploaded yet.</td></tr>';
         h += '</tbody></table></div>';
       }
       h += '</div>';
@@ -450,6 +457,23 @@ async function loadStatus() {
   } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
 }
 
+async function jlSave(btn) {
+  const tr = btn.closest("tr");
+  const jb_id = +tr.getAttribute("data-jb"), item_number = tr.getAttribute("data-item");
+  const qty_needed = Number(tr.querySelector(".jl-need").value)||0;
+  const qty_fulfilled = Number(tr.querySelector(".jl-ship").value)||0;
+  try { await api("/jbline-set", { method:"POST", body: JSON.stringify({ jb_id, item_number, qty_needed, qty_fulfilled }) });
+    flash("Saved item " + item_number + ".", "info"); loadStatus();
+  } catch (e) { flash(e.message, "err"); }
+}
+async function jlDelete(btn) {
+  const tr = btn.closest("tr");
+  const jb_id = +tr.getAttribute("data-jb"), item_number = tr.getAttribute("data-item");
+  if (!confirm("Remove item " + item_number + " from this JB?")) return;
+  try { await api("/jbline-delete", { method:"POST", body: JSON.stringify({ jb_id, item_number }) });
+    flash("Removed item " + item_number + ".", "info"); loadStatus();
+  } catch (e) { flash(e.message, "err"); }
+}
 async function loadInventory() {
   const el = document.getElementById("reportBody"); el.innerHTML = '<p class="muted">Loading…</p>';
   try {

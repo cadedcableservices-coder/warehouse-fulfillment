@@ -237,6 +237,19 @@ async function handleApi(request, env, url) {
       await db.prepare("DELETE FROM inventory WHERE item_number = ?").bind(String(b.item_number || "").trim()).run();
       return json({ ok: true });
     }
+    // Manually edit a JB line's needed / shipped quantities (from the JB Status report).
+    if (route === "jbline-set" && method === "POST") {
+      const b = await request.json();
+      if (!b.jb_id || !String(b.item_number || "").trim()) return bad("jb_id and item_number required.");
+      await db.prepare("UPDATE jb_lines SET qty_needed=?, qty_fulfilled=? WHERE jb_id=? AND item_number=?")
+        .bind(num(b.qty_needed, 0), num(b.qty_fulfilled, 0), +b.jb_id, String(b.item_number).trim()).run();
+      return json({ ok: true });
+    }
+    if (route === "jbline-delete" && method === "POST") {
+      const b = await request.json();
+      await db.prepare("DELETE FROM jb_lines WHERE jb_id=? AND item_number=?").bind(+b.jb_id, String(b.item_number || "").trim()).run();
+      return json({ ok: true });
+    }
     if (route === "history" && method === "GET") {
       const runs = (await db.prepare(
         `SELECT r.id, r.created_at, r.created_by,
