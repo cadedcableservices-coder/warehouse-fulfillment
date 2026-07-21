@@ -8,7 +8,9 @@
 
 // ---------------- allocation engine ----------------
 function normalizeItem(x) {
-  return String(x == null ? "" : x).trim().toUpperCase();
+  let s = String(x == null ? "" : x).trim().toUpperCase();
+  s = s.replace(/^0+(?=.)/, ""); // ignore leading zeros: 000000250 matches 250 (keep one char if all zeros)
+  return s;
 }
 function priorityTuple(need) {
   return [
@@ -194,12 +196,18 @@ async function handleApi(request, env, url) {
       if (!run) return bad("Run not found.", 404);
       if (run.committed) return bad("Run already committed.");
       const allocs = (await db.prepare("SELECT * FROM allocations WHERE run_id=?").bind(+b.run_id).all()).results || [];
+      // Map normalized item number -> the actual stored inventory key (handles zero-padding).
+      const invRows = (await db.prepare("SELECT item_number FROM inventory").all()).results || [];
+      const invByNorm = new Map();
+      for (const r of invRows) invByNorm.set(normalizeItem(r.item_number), r.item_number);
       const stmts = [];
       for (const a of allocs) {
         // Mark placed against the JB...
         stmts.push(db.prepare("UPDATE jb_lines SET qty_fulfilled = qty_fulfilled + ? WHERE jb_id=? AND item_number=?").bind(a.qty_allocated, a.jb_id, a.item_number));
         // ...and remove from on-hand inventory (live running balance, floored at 0).
-        stmts.push(db.prepare("UPDATE inventory SET qty_available = MAX(0, qty_available - ?), updated_at = datetime('now') WHERE UPPER(TRIM(item_number)) = UPPER(TRIM(?))").bind(a.qty_allocated, a.item_number));
+        const invKey = invByNorm.get(normalizeItem(a.item_number));
+        if (invKey !== undefined)
+          stmts.push(db.prepare("UPDATE inventory SET qty_available = MAX(0, qty_available - ?), updated_at = datetime('now') WHERE item_number = ?").bind(a.qty_allocated, invKey));
       }
       stmts.push(db.prepare("UPDATE runs SET committed=1 WHERE id=?").bind(+b.run_id));
       if (stmts.length) await db.batch(stmts);
