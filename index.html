@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Warehouse Fulfillment</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root { --blue:#1f6feb; --green:#1a7f37; --red:#cf222e; --ink:#1c2128; --muted:#57606a; --line:#d0d7de; --bg:#f6f8fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  header { background:#0d1117; color:#fff; padding:14px 20px; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:19px; margin:0; font-weight:700; }
+  header .who { margin-left:auto; font-size:13px; color:#adbac7; }
+  .tabs { display:flex; gap:4px; background:#161b22; padding:0 12px; }
+  .tabs button { background:none; border:none; color:#adbac7; padding:13px 18px; font-size:15px; cursor:pointer; border-bottom:3px solid transparent; }
+  .tabs button.active { color:#fff; border-bottom-color:var(--blue); font-weight:600; }
+  main { max-width:1000px; margin:0 auto; padding:22px 16px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:18px; }
+  .card h2 { margin:0 0 4px; font-size:18px; }
+  .card .sub { color:var(--muted); font-size:14px; margin:0 0 16px; }
+  .step { font-size:13px; font-weight:700; color:var(--blue); letter-spacing:.04em; text-transform:uppercase; }
+  button.big { font-size:17px; padding:15px 22px; border-radius:9px; border:none; cursor:pointer; font-weight:600; }
+  .primary { background:var(--blue); color:#fff; }
+  .success { background:var(--green); color:#fff; }
+  .neutral { background:#eaeef2; color:var(--ink); border:1px solid var(--line) !important; }
+  .danger  { background:#fff; color:var(--red); border:1px solid var(--red) !important; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input[type=text], input[type=number], input[type=password] { padding:9px 11px; border:1px solid var(--line); border-radius:7px; font-size:15px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { background:var(--bg); font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+  .pill { display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; font-weight:600; }
+  .pill.ok { background:#dafbe1; color:var(--green); }
+  .pill.short { background:#ffebe9; color:var(--red); }
+  .banner { padding:11px 14px; border-radius:8px; font-size:14px; margin-bottom:14px; }
+  .banner.info { background:#ddf4ff; color:#0a3069; }
+  .banner.warn { background:#fff8c5; color:#7d4e00; }
+  .banner.err  { background:#ffebe9; color:var(--red); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:13px; }
+  .file-drop { border:2px dashed var(--line); border-radius:9px; padding:22px; text-align:center; color:var(--muted); cursor:pointer; }
+  .file-drop:hover { border-color:var(--blue); color:var(--blue); }
+  .jbcard { border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:10px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .print-title { display:none; }
+  @media print {
+    header, .tabs, .noprint { display:none !important; }
+    body { background:#fff; }
+    .card { border:none; padding:0; }
+    .print-title { display:block; }
+    main { max-width:none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login" style="max-width:380px;margin:12vh auto;padding:0 16px;">
+  <div class="card">
+    <h2>Warehouse Fulfillment</h2>
+    <p class="sub">Enter the password to continue.</p>
+    <div class="row">
+      <input id="pw" type="password" placeholder="Password" style="flex:1" />
+      <button class="big primary" onclick="doLogin()">Enter</button>
+    </div>
+    <p id="loginErr" class="banner err" style="display:none;margin-top:12px;"></p>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" style="display:none;">
+  <header>
+    <h1>🏗️ Warehouse Fulfillment</h1>
+    <span class="who" id="whoLabel"></span>
+  </header>
+  <div class="tabs">
+    <button data-tab="run" class="active" onclick="showTab('run')">Run Fulfillment</button>
+    <button data-tab="reports" onclick="showTab('reports')">Reports</button>
+    <button data-tab="setup" onclick="showTab('setup')">Setup</button>
+  </div>
+  <main>
+    <div id="msg"></div>
+
+    <!-- ============ RUN TAB ============ -->
+    <section id="tab-run">
+      <div class="card noprint">
+        <div class="step">Step 1</div>
+        <h2>Upload today's inventory</h2>
+        <p class="sub">Pick the Excel file for the truck / current on-hand stock. This replaces the stored inventory.</p>
+        <label class="file-drop" for="invFile">
+          📦 Click to choose your inventory Excel file
+          <input id="invFile" type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleInventory(this)" />
+        </label>
+        <p id="invStatus" class="muted" style="margin-top:10px;"></p>
+      </div>
+
+      <div class="card noprint">
+        <div class="step">Step 2</div>
+        <h2>Run the allocation</h2>
+        <p class="sub">The system decides where each item goes, filling the highest-priority JBs first.</p>
+        <button class="big primary" onclick="runAllocation()">▶ Run allocation</button>
+      </div>
+
+      <div id="pickResult"></div>
+    </section>
+
+    <!-- ============ REPORTS TAB ============ -->
+    <section id="tab-reports" style="display:none;">
+      <div class="row noprint" style="margin-bottom:14px;">
+        <button class="big neutral" onclick="loadReport()">↻ Refresh</button>
+        <button class="big neutral" onclick="window.print()">🖨 Print</button>
+      </div>
+      <div id="reportBody"><p class="muted">Loading…</p></div>
+    </section>
+
+    <!-- ============ SETUP TAB ============ -->
+    <section id="tab-setup" style="display:none;">
+      <div class="card">
+        <h2>Add a project</h2>
+        <p class="sub">Lower priority number = filled first. (e.g. 1 = most important)</p>
+        <div class="row">
+          <input id="projName" type="text" placeholder="Project name" />
+          <input id="projPrio" type="number" placeholder="Priority" style="width:110px" value="10" />
+          <button class="big primary" onclick="addProject()">Add project</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Projects &amp; JBs</h2>
+        <p class="sub">Add JB numbers under each project and upload each JB's bill of materials. Change priorities anytime, then Save.</p>
+        <div id="setupBody"><p class="muted">Loading…</p></div>
+        <button class="big success noprint" onclick="savePriorities()" style="margin-top:8px;">💾 Save all priorities</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = "/api";
+let PW = localStorage.getItem("wf_pw") || "";
+let WHO = localStorage.getItem("wf_who") || "";
+let STATE = null;
+let LAST_RUN = null;
+
+// ---------- helpers ----------
+function api(path, opts = {}) {
+  opts.headers = Object.assign({ "content-type": "application/json", "x-app-password": PW }, opts.headers || {});
+  return fetch(API + path, opts).then(async (r) => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+    return data;
+  });
+}
+function flash(text, kind = "info") {
+  document.getElementById("msg").innerHTML = '<div class="banner ' + kind + '">' + text + "</div>";
+  if (kind !== "err") setTimeout(() => { const m = document.getElementById("msg"); if (m) m.innerHTML = ""; }, 5000);
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function n(x){ const v=Number(x)||0; return Math.round(v*100)/100; }
+
+// ---------- login ----------
+async function doLogin() {
+  const pw = document.getElementById("pw").value;
+  try {
+    await fetch(API + "/login", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ password: pw }) })
+      .then(r => { if (!r.ok) throw new Error("Wrong password."); });
+    PW = pw; localStorage.setItem("wf_pw", pw);
+    if (!WHO) { WHO = prompt("Your name (for the records):") || ""; localStorage.setItem("wf_who", WHO); }
+    startApp();
+  } catch (e) {
+    const el = document.getElementById("loginErr"); el.style.display="block"; el.textContent = e.message;
+  }
+}
+function startApp() {
+  document.getElementById("login").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  document.getElementById("whoLabel").textContent = WHO ? ("Signed in: " + WHO) : "";
+  refreshState();
+}
+
+// ---------- tabs ----------
+function showTab(t) {
+  ["run","reports","setup"].forEach(x => document.getElementById("tab-"+x).style.display = x===t ? "block":"none");
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab===t));
+  if (t==="reports") loadReport();
+  if (t==="setup") renderSetup();
+}
+
+// ---------- Excel parsing ----------
+function readSheet(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = e => {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type:"array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(ws, { defval:"" }));
+      } catch (err) { reject(err); }
+    };
+    fr.onerror = reject;
+    fr.readAsArrayBuffer(file);
+  });
+}
+// Flexible column detection from the first row's keys.
+function pickCols(rows) {
+  if (!rows.length) return null;
+  const keys = Object.keys(rows[0]);
+  const find = (tests) => keys.find(k => { const s=k.toLowerCase(); return tests.some(t=>s.includes(t)); });
+  return {
+    item: find(["item","part","sku","material","stock"]),
+    desc: find(["desc","name"]),
+    qty:  find(["needed","need","required","qty","quantity","avail","count","on hand","onhand"]),
+  };
+}
+function rowsToItems(rows, qtyField) {
+  const cols = pickCols(rows);
+  if (!cols || !cols.item || !cols.qty) throw new Error("Could not find an Item and a Quantity column. Use the provided template.");
+  return rows.map(r => ({
+    item_number: String(r[cols.item]).trim(),
+    description: cols.desc ? String(r[cols.desc]).trim() : "",
+    [qtyField]: Number(r[cols.qty]) || 0,
+  })).filter(x => x.item_number);
+}
+
+// ---------- inventory upload ----------
+async function handleInventory(input) {
+  const file = input.files[0]; if (!file) return;
+  document.getElementById("invStatus").textContent = "Reading " + file.name + " …";
+  try {
+    const rows = await readSheet(file);
+    const items = rowsToItems(rows, "qty_available");
+    const res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
+    document.getElementById("invStatus").innerHTML = "✅ Loaded <b>" + res.items + "</b> items from " + esc(file.name);
+    flash("Inventory updated — " + res.items + " items.", "info");
+    refreshState();
+  } catch (e) {
+    document.getElementById("invStatus").innerHTML = '<span style="color:#cf222e">❌ ' + esc(e.message) + "</span>";
+  }
+  input.value = "";
+}
+
+// ---------- run allocation ----------
+async function runAllocation() {
+  flash("Running…", "info");
+  try {
+    const res = await api("/allocate", { method:"POST", body: JSON.stringify({ created_by: WHO }) });
+    LAST_RUN = res;
+    renderPickList(res);
+    flash("Allocation complete. Review the pick list below, print it, then Commit when placed.", "info");
+    refreshState();
+  } catch (e) { flash(e.message, "err"); }
+}
+
+function renderPickList(res) {
+  const el = document.getElementById("pickResult");
+  if (!res.pick_list || !res.pick_list.length) {
+    el.innerHTML = '<div class="card"><p class="muted">Nothing to allocate — either no inventory, or all needs are already met.</p></div>';
+    return;
+  }
+  let h = '<div class="card">';
+  h += '<div class="print-title"><h2>Fulfillment Pick List</h2><p class="muted">Run #' + res.run_id + ' — ' + new Date().toLocaleString() + (WHO?(" — "+esc(WHO)):"") + '</p></div>';
+  h += '<div class="row noprint" style="justify-content:space-between;"><h2>Pick List — where each item goes</h2>'
+    + '<div class="row"><button class="big neutral" onclick="window.print()">🖨 Print for team</button>'
+    + '<button class="big success" onclick="commitRun(' + res.run_id + ')">✔ Commit (mark as placed)</button></div></div>';
+
+  for (const p of res.pick_list) {
+    h += '<h3 style="margin:18px 0 6px">' + esc(p.project_name) + '</h3>';
+    for (const jb of p.jbs) {
+      h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b>';
+      h += '<table><thead><tr><th>Item #</th><th>Description</th><th style="text-align:right">Qty to place</th></tr></thead><tbody>';
+      for (const it of jb.items)
+        h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td style="text-align:right"><b>' + n(it.qty) + '</b></td></tr>';
+      h += '</tbody></table></div>';
+    }
+  }
+  if (res.shortages && res.shortages.length) {
+    h += '<div class="banner warn" style="margin-top:14px"><b>Short items</b> (demand exceeded stock): ';
+    h += res.shortages.map(s => esc(s.item_number) + " (short " + n(s.short) + ")").join(", ");
+    h += '</div>';
+  }
+  h += "</div>";
+  el.innerHTML = h;
+  el.scrollIntoView({ behavior:"smooth" });
+}
+
+async function commitRun(runId) {
+  if (!confirm("Commit this run? This records the items as placed and reduces remaining need.")) return;
+  try { await api("/commit", { method:"POST", body: JSON.stringify({ run_id: runId }) });
+    flash("Committed. Remaining needs updated.", "info"); refreshState();
+  } catch (e) { flash(e.message, "err"); }
+}
+
+// ---------- state / setup ----------
+async function refreshState() {
+  try { STATE = await api("/state"); renderSetup();
+    const inv = STATE.inventory;
+    if (inv && inv.items) document.getElementById("invStatus").innerHTML =
+      "Current stored inventory: <b>" + inv.items + "</b> items (updated " + (inv.updated||"—") + ")";
+  } catch (e) { flash(e.message, "err"); }
+}
+
+function renderSetup() {
+  if (!STATE) return;
+  const el = document.getElementById("setupBody");
+  if (!STATE.projects.length) { el.innerHTML = '<p class="muted">No projects yet. Add one above.</p>'; return; }
+  let h = "";
+  for (const p of STATE.projects) {
+    h += '<div class="card" style="background:#fbfcfd">';
+    h += '<div class="row" style="justify-content:space-between"><h3 style="margin:0">' + esc(p.name) + '</h3>'
+      + '<div class="row">Priority <input type="number" value="' + p.priority + '" style="width:80px" data-proj="' + p.id + '">'
+      + '<button class="danger" style="padding:6px 10px;border-radius:6px" onclick="delProject(' + p.id + ')">Delete</button></div></div>';
+    h += '<table><thead><tr><th>JB #</th><th>Priority</th><th>Lines</th><th>Needed</th><th>Fulfilled</th><th>Upload bill</th><th></th></tr></thead><tbody>';
+    for (const jb of p.jbs) {
+      h += '<tr><td><b>' + esc(jb.jb_number) + '</b></td>'
+        + '<td><input type="number" value="' + jb.priority + '" style="width:70px" data-jb="' + jb.id + '"></td>'
+        + '<td>' + jb.line_count + '</td><td>' + n(jb.total_needed) + '</td><td>' + n(jb.total_fulfilled) + '</td>'
+        + '<td><input type="file" accept=".xlsx,.xls,.csv" onchange="uploadJB(' + jb.id + ', this)"></td>'
+        + '<td><button class="danger" style="padding:4px 8px;border-radius:6px" onclick="delJB(' + jb.id + ')">✕</button></td></tr>';
+    }
+    h += '</tbody></table>';
+    h += '<div class="row" style="margin-top:8px"><input type="text" placeholder="New JB number" id="newjb-' + p.id + '">'
+      + '<input type="number" placeholder="Priority" value="10" id="newjbp-' + p.id + '" style="width:100px">'
+      + '<button class="primary" style="padding:8px 14px;border-radius:7px" onclick="addJB(' + p.id + ')">+ Add JB</button></div>';
+    h += "</div>";
+  }
+  el.innerHTML = h;
+}
+
+async function addProject() {
+  const name = document.getElementById("projName").value.trim();
+  const priority = Number(document.getElementById("projPrio").value) || 100;
+  if (!name) return flash("Enter a project name.", "err");
+  try { await api("/projects", { method:"POST", body: JSON.stringify({ name, priority }) });
+    document.getElementById("projName").value = ""; flash("Project added.", "info"); refreshState();
+  } catch (e) { flash(e.message, "err"); }
+}
+async function delProject(id){ if(!confirm("Delete this project and all its JBs?"))return;
+  try{ await api("/projects/"+id,{method:"DELETE"}); refreshState(); }catch(e){ flash(e.message,"err"); } }
+async function addJB(pid) {
+  const jb_number = document.getElementById("newjb-"+pid).value.trim();
+  const priority = Number(document.getElementById("newjbp-"+pid).value) || 100;
+  if (!jb_number) return flash("Enter a JB number.", "err");
+  try { await api("/jbs", { method:"POST", body: JSON.stringify({ project_id: pid, jb_number, priority }) });
+    flash("JB added.", "info"); refreshState();
+  } catch (e) { flash(e.message, "err"); }
+}
+async function delJB(id){ if(!confirm("Delete this JB and its bill?"))return;
+  try{ await api("/jbs/"+id,{method:"DELETE"}); refreshState(); }catch(e){ flash(e.message,"err"); } }
+
+async function uploadJB(jbId, input) {
+  const file = input.files[0]; if (!file) return;
+  try {
+    const rows = await readSheet(file);
+    const lines = rowsToItems(rows, "qty_needed");
+    const res = await api("/jb-upload", { method:"POST", body: JSON.stringify({ jb_id: jbId, lines }) });
+    flash("Loaded " + res.lines + " material lines.", "info"); refreshState();
+  } catch (e) { flash(e.message, "err"); }
+  input.value = "";
+}
+
+async function savePriorities() {
+  const projects = [...document.querySelectorAll("[data-proj]")].map(i => ({ id:+i.dataset.proj, priority:+i.value }));
+  const jbs = [...document.querySelectorAll("[data-jb]")].map(i => ({ id:+i.dataset.jb, priority:+i.value }));
+  try { await api("/priority", { method:"POST", body: JSON.stringify({ projects, jbs }) });
+    flash("Priorities saved.", "info"); refreshState();
+  } catch (e) { flash(e.message, "err"); }
+}
+
+// ---------- reports ----------
+async function loadReport() {
+  const el = document.getElementById("reportBody");
+  el.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const rep = await api("/report");
+    if (!rep.projects.length) { el.innerHTML = '<p class="muted">No projects yet.</p>'; return; }
+    let h = '<div class="print-title"><h2>Materials Report</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
+    for (const p of rep.projects) {
+      h += '<div class="card"><h2>' + esc(p.project_name) + '</h2>';
+      h += '<h3>Whole-project totals</h3>';
+      h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Fulfilled</th><th>Still needed</th><th></th></tr></thead><tbody>';
+      for (const t of p.totals) {
+        const short = t.remaining > 0;
+        h += '<tr><td>' + esc(t.item_number) + '</td><td>' + esc(t.description) + '</td><td>' + n(t.needed) + '</td><td>' + n(t.fulfilled) + '</td>'
+          + '<td><b>' + n(t.remaining) + '</b></td><td>' + (short?'<span class="pill short">short</span>':'<span class="pill ok">done</span>') + '</td></tr>';
+      }
+      if (!p.totals.length) h += '<tr><td colspan="6" class="muted">No material lines uploaded yet.</td></tr>';
+      h += '</tbody></table>';
+      h += '<h3 style="margin-top:18px">Still needed per JB</h3>';
+      for (const jb of p.jbs) {
+        const open = jb.items.filter(i => i.remaining > 0);
+        h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b>';
+        if (!open.length) { h += ' <span class="pill ok">fully fulfilled</span></div>'; continue; }
+        h += '<table><thead><tr><th>Item #</th><th>Description</th><th>Needed</th><th>Fulfilled</th><th>Still needed</th></tr></thead><tbody>';
+        for (const it of open)
+          h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td>' + n(it.needed) + '</td><td>' + n(it.fulfilled) + '</td><td><b>' + n(it.remaining) + '</b></td></tr>';
+        h += '</tbody></table></div>';
+      }
+      h += '</div>';
+    }
+    el.innerHTML = h;
+  } catch (e) { el.innerHTML = '<div class="banner err">' + esc(e.message) + '</div>'; }
+}
+
+// ---------- boot ----------
+if (PW) {
+  fetch(API + "/login", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ password: PW }) })
+    .then(r => { if (r.ok) startApp(); });
+}
+document.getElementById("pw").addEventListener("keydown", e => { if (e.key==="Enter") doLogin(); });
+</script>
+</body>
+</html>
