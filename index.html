@@ -87,10 +87,10 @@
     <section id="tab-run">
       <div class="card noprint">
         <div class="step">Step 1</div>
-        <h2>Upload today's inventory</h2>
-        <p class="sub">Pick the Excel file for the truck / current on-hand stock. This replaces the stored inventory.</p>
+        <h2>Receive today's truck</h2>
+        <p class="sub">Upload the Excel file of what came in on today's delivery. These quantities are <b>added</b> to on-hand inventory (it does not replace it). Upload once per delivery.</p>
         <label class="file-drop" for="invFile">
-          📦 Click to choose your inventory Excel file
+          📦 Click to choose today's truck Excel file
           <input id="invFile" type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleInventory(this)" />
         </label>
         <p id="invStatus" class="muted" style="margin-top:10px;"></p>
@@ -258,7 +258,8 @@ async function handleInventory(input) {
     const rows = await readSheetRows(file);
     const items = parseRows(rows, "inventory");
     const res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
-    document.getElementById("invStatus").innerHTML = "✅ Loaded <b>" + res.items + "</b> items from " + esc(file.name) + ". Building the proposed pick list…";
+    document.getElementById("invStatus").innerHTML = "✅ Received <b>" + res.received + "</b> items from " + esc(file.name)
+      + " (" + res.new_items + " new, " + res.updated_items + " added to existing stock). Building the proposed allocation…";
     refreshState();
     await runAllocation();   // auto-propose what to pick and where; nothing applied until approved
   } catch (e) {
@@ -286,10 +287,12 @@ function renderPickList(res) {
     return;
   }
   let h = '<div class="card">';
-  h += '<div class="print-title"><h2>Fulfillment Pick List</h2><p class="muted">Run #' + res.run_id + ' — ' + new Date().toLocaleString() + (WHO?(" — "+esc(WHO)):"") + '</p></div>';
+  h += '<div class="print-title"><h2>Allocation Approval — where each item is going</h2>'
+    + '<p class="muted">Run #' + res.run_id + ' — ' + new Date().toLocaleString() + (WHO?(" — prepared by "+esc(WHO)):"") + '</p>'
+    + '<p style="margin:6px 0 14px">Approved by: __________________________   Date: ______________</p></div>';
   h += '<div class="row noprint" style="justify-content:space-between;">'
-    + '<div><h2 style="margin:0">Proposed pick list — where each item goes</h2><p class="muted" style="margin:3px 0 0">Review this, then Approve &amp; apply. Nothing changes in reporting or inventory until you approve.</p></div>'
-    + '<div class="row"><button class="big neutral" onclick="window.print()">🖨 Print for team</button>'
+    + '<div><h2 style="margin:0">Proposed allocation — where each item is going</h2><p class="muted" style="margin:3px 0 0">This is the approval sheet: it shows each item, the project/JB it\'s assigned to, and the quantity. Print it for Roush to review. Nothing changes in reporting or inventory until you Approve &amp; apply.</p></div>'
+    + '<div class="row"><button class="big neutral" onclick="window.print()">🖨 Print approval sheet</button>'
     + '<button class="big success" onclick="commitRun(' + res.run_id + ')">✔ Approve &amp; apply</button></div></div>';
 
   for (const p of res.pick_list) {
@@ -557,8 +560,10 @@ async function loadHistory() {
 async function viewRun(id) {
   try {
     const res = await api("/run/" + id);
+    const by = res.run && res.run.created_by ? res.run.created_by : "";
     let h = '<div class="card">';
-    h += '<div class="print-title"><h2>Fulfillment Pick List</h2></div>';
+    h += '<div class="print-title"><h2>Allocation Record — where each item went</h2>'
+      + '<p class="muted">Run #' + id + ' — ' + esc(res.run?res.run.created_at:"") + (by?(" — by "+esc(by)):"") + '</p></div>';
     h += '<div class="row noprint" style="justify-content:space-between"><h2>Run #' + id + ' — ' + esc(res.run?res.run.created_at:"") + '</h2><button class="big neutral" onclick="window.print()">🖨 Print</button></div>';
     if (!res.pick_list.length) h += '<p class="muted">No lines.</p>';
     for (const p of res.pick_list) {

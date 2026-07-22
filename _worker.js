@@ -166,22 +166,37 @@ async function handleApi(request, env, url) {
       return json({ ok: true, jb_id: jbId, lines: merged.size });
     }
 
+    // Truck receipt: ADD the received quantities to on-hand inventory (does NOT replace).
     if (route === "inventory-upload" && method === "POST") {
       const b = await request.json();
       const items = Array.isArray(b.items) ? b.items : [];
+      // merge duplicate rows within the sheet by normalized item number
       const merged = new Map();
       for (const it of items) {
         const key = normalizeItem(it.item_number); if (!key) continue;
-        const prev = merged.get(key) || { item_number: String(it.item_number).trim(), description: it.description || "", qty: 0 };
+        const prev = merged.get(key) || { key, item_number: String(it.item_number).trim(), description: it.description || "", qty: 0 };
         prev.qty += num(it.qty_available, 0);
         if (!prev.description && it.description) prev.description = it.description;
         merged.set(key, prev);
       }
-      const stmts = [db.prepare("DELETE FROM inventory")];
-      for (const m of merged.values())
-        stmts.push(db.prepare("INSERT INTO inventory (item_number, description, qty_available) VALUES (?,?,?)").bind(m.item_number, m.description, m.qty));
-      await db.batch(stmts);
-      return json({ ok: true, items: merged.size });
+      // existing inventory keyed by normalized number (handles zero-padding differences)
+      const invRows = (await db.prepare("SELECT item_number FROM inventory").all()).results || [];
+      const byNorm = new Map();
+      for (const r of invRows) byNorm.set(normalizeItem(r.item_number), r.item_number);
+      const stmts = [];
+      let added = 0, updated = 0;
+      for (const m of merged.values()) {
+        const existing = byNorm.get(m.key);
+        if (existing !== undefined) {
+          stmts.push(db.prepare("UPDATE inventory SET qty_available = qty_available + ?, updated_at = datetime('now') WHERE item_number = ?").bind(m.qty, existing));
+          updated++;
+        } else {
+          stmts.push(db.prepare("INSERT INTO inventory (item_number, description, qty_available) VALUES (?,?,?)").bind(m.item_number, m.description, m.qty));
+          added++;
+        }
+      }
+      if (stmts.length) await db.batch(stmts);
+      return json({ ok: true, received: merged.size, new_items: added, updated_items: updated });
     }
 
     if (route === "allocate" && method === "POST") {
