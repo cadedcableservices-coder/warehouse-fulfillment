@@ -213,7 +213,7 @@ async function handleApi(request, env, url) {
 
     if (route === "allocate" && method === "POST") {
       const b = await request.json().catch(() => ({}));
-      return json(await runAllocation(db, b.created_by || ""));
+      return json(await runAllocation(db, b.created_by || "", b.pool));
     }
 
     if (route === "commit" && method === "POST") {
@@ -223,21 +223,34 @@ async function handleApi(request, env, url) {
       if (!run) return bad("Run not found.", 404);
       if (run.committed) return bad("Run already committed.");
       const allocs = (await db.prepare("SELECT * FROM allocations WHERE run_id=?").bind(+b.run_id).all()).results || [];
-      // Map normalized item number -> the actual stored inventory key (handles zero-padding).
-      const invRows = (await db.prepare("SELECT item_number FROM inventory").all()).results || [];
-      const invByNorm = new Map();
-      for (const r of invRows) invByNorm.set(normalizeItem(r.item_number), r.item_number);
       const stmts = [];
       for (const a of allocs) {
-        // Mark placed against the JB...
+        // Mark the allocated quantity as shipped/placed against the JB.
         stmts.push(db.prepare("UPDATE jb_lines SET qty_fulfilled = qty_fulfilled + ? WHERE jb_id=? AND item_number=?").bind(a.qty_allocated, a.jb_id, a.item_number));
-        // ...and remove from on-hand inventory (live running balance, floored at 0).
-        const invKey = invByNorm.get(normalizeItem(a.item_number));
-        if (invKey !== undefined)
-          stmts.push(db.prepare("UPDATE inventory SET qty_available = MAX(0, qty_available - ?), updated_at = datetime('now') WHERE item_number = ?").bind(a.qty_allocated, invKey));
       }
       stmts.push(db.prepare("UPDATE runs SET committed=1 WHERE id=?").bind(+b.run_id));
       if (stmts.length) await db.batch(stmts);
+      return json({ ok: true });
+    }
+
+    // Manually adjust a proposed allocation line before it's approved.
+    if (route === "alloc-set" && method === "POST") {
+      const b = await request.json();
+      if (!b.run_id || !b.jb_id || !String(b.item_number || "").trim()) return bad("run_id, jb_id, item_number required.");
+      const run = await db.prepare("SELECT committed FROM runs WHERE id=?").bind(+b.run_id).first();
+      if (!run) return bad("Run not found.", 404);
+      if (run.committed) return bad("This allocation is already approved and can't be edited.");
+      const item = String(b.item_number).trim();
+      const existing = await db.prepare("SELECT id FROM allocations WHERE run_id=? AND jb_id=? AND item_number=?").bind(+b.run_id, +b.jb_id, item).first();
+      if (existing) await db.prepare("UPDATE allocations SET qty_allocated=?, description=COALESCE(NULLIF(?,''),description) WHERE id=?").bind(num(b.qty_allocated, 0), b.description || "", existing.id).run();
+      else await db.prepare("INSERT INTO allocations (run_id, jb_id, item_number, description, qty_allocated) VALUES (?,?,?,?,?)").bind(+b.run_id, +b.jb_id, item, b.description || "", num(b.qty_allocated, 0)).run();
+      return json({ ok: true });
+    }
+    if (route === "alloc-delete" && method === "POST") {
+      const b = await request.json();
+      const run = await db.prepare("SELECT committed FROM runs WHERE id=?").bind(+b.run_id).first();
+      if (run && run.committed) return bad("This allocation is already approved and can't be edited.");
+      await db.prepare("DELETE FROM allocations WHERE run_id=? AND jb_id=? AND item_number=?").bind(+b.run_id, +b.jb_id, String(b.item_number || "").trim()).run();
       return json({ ok: true });
     }
 
@@ -336,11 +349,24 @@ async function loadNeeds(db) {
   }));
 }
 
-async function runAllocation(db, createdBy) {
-  const inventory = (await db.prepare("SELECT item_number, description, qty_available FROM inventory").all()).results || [];
+async function runAllocation(db, createdBy, pool) {
+  // If a pool (an uploaded pull) is provided, allocate ONLY those items/quantities.
+  // Otherwise fall back to whatever is in on-hand inventory.
+  const hasPool = Array.isArray(pool) && pool.length > 0;
+  let inventory;
+  if (hasPool) {
+    inventory = pool.map((p) => ({
+      item_number: p.item_number,
+      description: p.description || "",
+      qty_available: num(p.qty != null ? p.qty : p.qty_available, 0),
+    }));
+  } else {
+    inventory = (await db.prepare("SELECT item_number, description, qty_available FROM inventory").all()).results || [];
+  }
   const needs = await loadNeeds(db);
   const { allocations, leftover, shortages } = computeAllocation(inventory, needs);
-  const run = await db.prepare("INSERT INTO runs (created_by, committed) VALUES (?, 0) RETURNING id").bind(createdBy || null).first();
+  const run = await db.prepare("INSERT INTO runs (created_by, committed, pool) VALUES (?, 0, ?) RETURNING id")
+    .bind(createdBy || null, hasPool ? JSON.stringify(inventory) : null).first();
   const runId = run.id;
   if (allocations.length) {
     await db.batch(allocations.map((a) =>
@@ -348,7 +374,7 @@ async function runAllocation(db, createdBy) {
         .bind(runId, a.jb_id, a.item_number, a.description || "", a.qty_allocated)));
   }
   const pick = await getRun(db, runId);
-  return { run_id: runId, ...pick, leftover, shortages };
+  return { run_id: runId, ...pick };
 }
 
 async function getRun(db, runId) {
@@ -368,7 +394,21 @@ async function getRun(db, runId) {
     projects[pk].jbs[jk].items.push({ item_number: r.item_number, description: r.description, qty: r.qty_allocated });
   }
   const grouped = Object.values(projects).map((p) => ({ ...p, jbs: Object.values(p.jbs) }));
-  return { run, pick_list: grouped, total_lines: rows.length };
+  // Pool status: for each pulled item, how much was pulled vs assigned (leftover / over-assigned).
+  let pool_status = [];
+  if (run && run.pool) {
+    let pool = [];
+    try { pool = JSON.parse(run.pool) || []; } catch {}
+    const assigned = {};
+    for (const r of rows) { const k = normalizeItem(r.item_number); assigned[k] = (assigned[k] || 0) + (Number(r.qty_allocated) || 0); }
+    pool_status = pool.map((p) => {
+      const k = normalizeItem(p.item_number);
+      const pulled = Number(p.qty_available) || 0;
+      const asg = assigned[k] || 0;
+      return { item_number: p.item_number, description: p.description || "", pulled, assigned: asg, leftover: pulled - asg };
+    });
+  }
+  return { run, pick_list: grouped, total_lines: rows.length, pool_status };
 }
 
 async function getReport(db) {

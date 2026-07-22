@@ -87,10 +87,10 @@
     <section id="tab-run">
       <div class="card noprint">
         <div class="step">Step 1</div>
-        <h2>Receive today's truck</h2>
-        <p class="sub">Upload the Excel file of what came in on today's delivery. These quantities are <b>added</b> to on-hand inventory (it does not replace it). Upload once per delivery.</p>
+        <h2>Upload today's pull</h2>
+        <p class="sub">Upload the Excel file of what you pulled / received (item number + quantity). The app proposes where each of <b>those</b> items should go across the JBs by priority — it won't suggest anything that wasn't in this pull. Nothing is recorded until you approve.</p>
         <label class="file-drop" for="invFile">
-          📦 Click to choose today's truck Excel file
+          📦 Click to choose today's pull Excel file
           <input id="invFile" type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleInventory(this)" />
         </label>
         <p id="invStatus" class="muted" style="margin-top:10px;"></p>
@@ -98,9 +98,8 @@
 
       <div class="card noprint">
         <div class="step">Step 2</div>
-        <h2>Run the allocation</h2>
-        <p class="sub">The system decides where each item goes, filling the highest-priority JBs first.</p>
-        <button class="big primary" onclick="runAllocation()">▶ Run allocation</button>
+        <h2>Review, adjust &amp; approve</h2>
+        <p class="sub">The proposed allocation appears below automatically after you upload. Edit any quantity, print it for Roush to sign off, then Approve &amp; apply to record it.</p>
       </div>
 
       <div id="pickResult"></div>
@@ -250,82 +249,121 @@ function parseRows(rows, kind) {
   return out;
 }
 
-// ---------- inventory upload ----------
+// ---------- pull upload -> proposed allocation ----------
 async function handleInventory(input) {
   const file = input.files[0]; if (!file) return;
   document.getElementById("invStatus").textContent = "Reading " + file.name + " …";
   try {
     const rows = await readSheetRows(file);
-    const items = parseRows(rows, "inventory");
-    let res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
-    if (res.duplicate) {
-      if (!confirm("⚠ This looks like a delivery you already received on " + res.previous_at + " (" + res.received + " items, " + n(res.total_qty) + " total qty). Uploading again will ADD these quantities on top. Add it again anyway?")) {
-        document.getElementById("invStatus").innerHTML = "Upload cancelled — looked like a duplicate delivery. Nothing was added.";
-        input.value = ""; return;
-      }
-      res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items, force:true }) });
-    }
-    document.getElementById("invStatus").innerHTML = "✅ Received <b>" + res.received + "</b> items from " + esc(file.name)
-      + " (" + res.new_items + " new, " + res.updated_items + " added to existing stock). Building the proposed allocation…";
-    refreshState();
-    await runAllocation();   // auto-propose what to pick and where; nothing applied until approved
+    const items = parseRows(rows, "inventory");   // {item_number, description, qty_available}
+    if (!items.length) throw new Error("No item/quantity rows found in this file.");
+    const pool = items.map(i => ({ item_number:i.item_number, description:i.description, qty:i.qty_available }));
+    document.getElementById("invStatus").innerHTML = "✅ Read <b>" + items.length + "</b> pulled items from " + esc(file.name) + ". Building the proposed allocation…";
+    const res = await api("/allocate", { method:"POST", body: JSON.stringify({ created_by: WHO, pool }) });
+    LAST_RUN = res;
+    renderPickList(res);
+    flash("Proposed allocation is below — it only uses what you just pulled. Adjust any quantities, then Approve & apply.", "info");
   } catch (e) {
     document.getElementById("invStatus").innerHTML = '<span style="color:#cf222e">❌ ' + esc(e.message) + "</span>";
   }
   input.value = "";
 }
 
-// ---------- run allocation ----------
+// Manual "Run allocation" button (allocates from stored on-hand inventory, if any).
 async function runAllocation() {
   flash("Running…", "info");
   try {
     const res = await api("/allocate", { method:"POST", body: JSON.stringify({ created_by: WHO }) });
-    LAST_RUN = res;
-    renderPickList(res);
-    flash("Proposed pick list ready below. Review it, print for the team, then Approve & apply.", "info");
-    refreshState();
+    LAST_RUN = res; renderPickList(res);
   } catch (e) { flash(e.message, "err"); }
+}
+
+function printTitle(runId) {
+  return '<div class="print-title"><h2>Allocation Approval — where each item is going</h2>'
+    + '<p class="muted">Run #' + runId + ' — ' + new Date().toLocaleString() + (WHO?(" — prepared by "+esc(WHO)):"") + '</p>'
+    + '<p style="margin:6px 0 14px">Approved by: __________________________   Date: ______________</p></div>';
+}
+function poolStatusHtml(ps) {
+  if (!ps || !ps.length) return '';
+  const left = ps.filter(x => x.leftover > 0.0001);
+  const over = ps.filter(x => x.leftover < -0.0001);
+  let h = '<div style="margin-top:14px">';
+  if (over.length) h += '<div class="banner err"><b>Over-assigned</b> — you\'ve placed more than was pulled for: ' + over.map(x => esc(x.item_number) + " (by " + n(-x.leftover) + ")").join(", ") + '. Lower these before approving.</div>';
+  if (left.length) h += '<div class="banner warn"><b>Left over</b> — pulled but not assigned to any JB: ' + left.map(x => esc(x.item_number) + " ×" + n(x.leftover)).join(", ") + '</div>';
+  if (!over.length && !left.length) h += '<div class="banner info">All pulled items are fully assigned to JBs.</div>';
+  h += '</div>';
+  return h;
 }
 
 function renderPickList(res) {
   const el = document.getElementById("pickResult");
+  const runId = res.run_id || (res.run && res.run.id);
   if (!res.pick_list || !res.pick_list.length) {
-    el.innerHTML = '<div class="card"><p class="muted">Nothing to allocate — either no inventory, or all needs are already met.</p></div>';
+    el.innerHTML = '<div class="card"><p class="muted">Nothing to allocate — none of the pulled items are needed by any JB right now (or all needs are already met).</p>'
+      + poolStatusHtml(res.pool_status) + '</div>';
+    el.scrollIntoView({ behavior:"smooth" });
     return;
   }
   let h = '<div class="card">';
-  h += '<div class="print-title"><h2>Allocation Approval — where each item is going</h2>'
-    + '<p class="muted">Run #' + res.run_id + ' — ' + new Date().toLocaleString() + (WHO?(" — prepared by "+esc(WHO)):"") + '</p>'
-    + '<p style="margin:6px 0 14px">Approved by: __________________________   Date: ______________</p></div>';
+  h += printTitle(runId);
   h += '<div class="row noprint" style="justify-content:space-between;">'
-    + '<div><h2 style="margin:0">Proposed allocation — where each item is going</h2><p class="muted" style="margin:3px 0 0">This is the approval sheet: it shows each item, the project/JB it\'s assigned to, and the quantity. Print it for Roush to review. Nothing changes in reporting or inventory until you Approve &amp; apply.</p></div>'
+    + '<div><h2 style="margin:0">Proposed allocation — where each pulled item goes</h2><p class="muted" style="margin:3px 0 0">Only the items you just pulled, filled by JB priority. Click <b>Edit</b> on any line to change the quantity going to a JB. Print it for Roush; nothing is recorded until you <b>Approve &amp; apply</b>.</p></div>'
     + '<div class="row"><button class="big neutral" onclick="window.print()">🖨 Print approval sheet</button>'
-    + '<button class="big success" onclick="commitRun(' + res.run_id + ')">✔ Approve &amp; apply</button></div></div>';
-
+    + '<button class="big success" onclick="commitRun(' + runId + ')">✔ Approve &amp; apply</button></div></div>';
   for (const p of res.pick_list) {
     h += '<h3 style="margin:18px 0 6px">' + esc(p.project_name) + '</h3>';
     for (const jb of p.jbs) {
       h += '<div class="jbcard"><b>JB ' + esc(jb.jb_number) + '</b>';
-      h += '<table><thead><tr><th>Item #</th><th>Description</th><th style="text-align:right">Qty to place</th></tr></thead><tbody>';
+      h += '<table><thead><tr><th>Item #</th><th>Description</th><th style="text-align:right">Qty to place</th><th class="noprint" style="width:80px"></th></tr></thead><tbody>';
       for (const it of jb.items)
-        h += '<tr><td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td><td style="text-align:right"><b>' + n(it.qty) + '</b></td></tr>';
+        h += '<tr data-run="' + runId + '" data-jb="' + jb.jb_id + '" data-item="' + esc(it.item_number) + '">'
+          + '<td>' + esc(it.item_number) + '</td><td>' + esc(it.description) + '</td>'
+          + '<td class="c-q" style="text-align:right"><b>' + n(it.qty) + '</b></td>'
+          + '<td class="noprint c-act"><button class="neutral" style="padding:4px 12px;border-radius:6px;font-size:13px" onclick="allocEdit(this)">Edit</button></td></tr>';
       h += '</tbody></table></div>';
     }
   }
-  if (res.shortages && res.shortages.length) {
-    h += '<div class="banner warn" style="margin-top:14px"><b>Short items</b> (demand exceeded stock): ';
-    h += res.shortages.map(s => esc(s.item_number) + " (short " + n(s.short) + ")").join(", ");
-    h += '</div>';
-  }
+  h += poolStatusHtml(res.pool_status);
   h += "</div>";
   el.innerHTML = h;
   el.scrollIntoView({ behavior:"smooth" });
 }
 
+function allocEdit(btn) {
+  const tr = btn.closest("tr");
+  const cur = Number(tr.querySelector(".c-q").textContent.replace(/[^0-9.\-]/g, "")) || 0;
+  tr.querySelector(".c-q").innerHTML = '<input type="number" class="al-q" value="' + cur + '" style="width:90px;text-align:right">';
+  tr.querySelector(".c-act").innerHTML =
+      '<button class="success" style="padding:4px 10px;border-radius:6px;font-size:13px" onclick="allocSave(this)">Save</button> '
+    + '<button class="neutral" style="padding:4px 10px;border-radius:6px;font-size:13px" onclick="reloadRun(' + tr.getAttribute("data-run") + ')">Cancel</button> '
+    + '<button class="danger" style="padding:4px 8px;border-radius:6px;font-size:13px" onclick="allocDelete(this)">✕</button>';
+}
+async function allocSave(btn) {
+  const tr = btn.closest("tr");
+  const run_id = +tr.getAttribute("data-run"), jb_id = +tr.getAttribute("data-jb"), item_number = tr.getAttribute("data-item");
+  const qty_allocated = Number(tr.querySelector(".al-q").value) || 0;
+  try { await api("/alloc-set", { method:"POST", body: JSON.stringify({ run_id, jb_id, item_number, qty_allocated }) });
+    flash("Updated " + item_number + ".", "info"); reloadRun(run_id);
+  } catch (e) { flash(e.message, "err"); }
+}
+async function allocDelete(btn) {
+  const tr = btn.closest("tr");
+  const run_id = +tr.getAttribute("data-run"), jb_id = +tr.getAttribute("data-jb"), item_number = tr.getAttribute("data-item");
+  try { await api("/alloc-delete", { method:"POST", body: JSON.stringify({ run_id, jb_id, item_number }) });
+    flash("Removed " + item_number + " from that JB.", "info"); reloadRun(run_id);
+  } catch (e) { flash(e.message, "err"); }
+}
+async function reloadRun(runId) {
+  try { const res = await api("/run/" + runId); res.run_id = runId; renderPickList(res); }
+  catch (e) { flash(e.message, "err"); }
+}
+
 async function commitRun(runId) {
-  if (!confirm("Approve and apply this pick list? It will mark the items shipped to each JB and remove them from on-hand inventory.")) return;
+  if (!confirm("Approve and apply this allocation? It records these quantities as shipped/placed against each JB.")) return;
   try { await api("/commit", { method:"POST", body: JSON.stringify({ run_id: runId }) });
-    flash("Applied. Reporting and on-hand inventory updated.", "info"); refreshState();
+    flash("Applied — recorded as shipped to each JB. See the JB Status and History reports.", "info");
+    document.getElementById("pickResult").innerHTML = '<div class="card"><p class="muted">✅ Allocation applied and recorded. Check <b>Reports → JB Status</b> and <b>History</b>.</p></div>';
+    refreshState();
   } catch (e) { flash(e.message, "err"); }
 }
 
