@@ -71,6 +71,7 @@ const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } });
 const bad = (msg, status = 400) => json({ error: msg }, status);
 const num = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+function hashStr(s) { let h = 5381; for (let i = 0; i < s.length; i++) { h = (((h << 5) + h) + s.charCodeAt(i)) & 0xffffffff; } return (h >>> 0).toString(16); }
 
 // ---------------- worker entry ----------------
 export default {
@@ -179,6 +180,16 @@ async function handleApi(request, env, url) {
         if (!prev.description && it.description) prev.description = it.description;
         merged.set(key, prev);
       }
+      // Duplicate-receipt guardrail: signature of this delivery's items+quantities.
+      const sigParts = [...merged.values()].map((m) => m.key + ":" + m.qty).sort();
+      const signature = hashStr(sigParts.join("|"));
+      const totalQty = [...merged.values()].reduce((s, m) => s + m.qty, 0);
+      if (b.force !== true) {
+        try {
+          const dup = await db.prepare("SELECT created_at FROM receipts WHERE signature=? AND created_at > datetime('now','-1 day') ORDER BY id DESC LIMIT 1").bind(signature).first();
+          if (dup) return json({ duplicate: true, previous_at: dup.created_at, received: merged.size, total_qty: totalQty });
+        } catch (e) { /* receipts table not present yet — skip guard */ }
+      }
       // existing inventory keyed by normalized number (handles zero-padding differences)
       const invRows = (await db.prepare("SELECT item_number FROM inventory").all()).results || [];
       const byNorm = new Map();
@@ -196,6 +207,7 @@ async function handleApi(request, env, url) {
         }
       }
       if (stmts.length) await db.batch(stmts);
+      try { await db.prepare("INSERT INTO receipts (signature, item_count, total_qty) VALUES (?,?,?)").bind(signature, merged.size, totalQty).run(); } catch (e) { /* table optional */ }
       return json({ ok: true, received: merged.size, new_items: added, updated_items: updated });
     }
 
@@ -258,6 +270,17 @@ async function handleApi(request, env, url) {
       if (!b.jb_id || !String(b.item_number || "").trim()) return bad("jb_id and item_number required.");
       await db.prepare("UPDATE jb_lines SET qty_needed=?, qty_fulfilled=? WHERE jb_id=? AND item_number=?")
         .bind(num(b.qty_needed, 0), num(b.qty_fulfilled, 0), +b.jb_id, String(b.item_number).trim()).run();
+      return json({ ok: true });
+    }
+    // Append (or upsert) a single line onto a JB without wiping its other lines.
+    if (route === "jbline-add" && method === "POST") {
+      const b = await request.json();
+      if (!b.jb_id || !String(b.item_number || "").trim()) return bad("jb_id and item_number required.");
+      await db.prepare(
+        "INSERT INTO jb_lines (jb_id, item_number, description, qty_needed, qty_fulfilled) VALUES (?,?,?,?,?) " +
+        "ON CONFLICT(jb_id, item_number) DO UPDATE SET qty_needed=excluded.qty_needed, " +
+        "description=COALESCE(NULLIF(excluded.description,''), jb_lines.description)"
+      ).bind(+b.jb_id, String(b.item_number).trim(), b.description || "", num(b.qty_needed, 0), num(b.qty_fulfilled, 0)).run();
       return json({ ok: true });
     }
     if (route === "jbline-delete" && method === "POST") {

@@ -257,7 +257,14 @@ async function handleInventory(input) {
   try {
     const rows = await readSheetRows(file);
     const items = parseRows(rows, "inventory");
-    const res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
+    let res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items }) });
+    if (res.duplicate) {
+      if (!confirm("⚠ This looks like a delivery you already received on " + res.previous_at + " (" + res.received + " items, " + n(res.total_qty) + " total qty). Uploading again will ADD these quantities on top. Add it again anyway?")) {
+        document.getElementById("invStatus").innerHTML = "Upload cancelled — looked like a duplicate delivery. Nothing was added.";
+        input.value = ""; return;
+      }
+      res = await api("/inventory-upload", { method:"POST", body: JSON.stringify({ items, force:true }) });
+    }
     document.getElementById("invStatus").innerHTML = "✅ Received <b>" + res.received + "</b> items from " + esc(file.name)
       + " (" + res.new_items + " new, " + res.updated_items + " added to existing stock). Building the proposed allocation…";
     refreshState();
