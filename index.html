@@ -548,7 +548,7 @@ async function exportCustomerXLSX() {
     const wb = new ExcelJS.Workbook();
     const HDR_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
     const HDR_FONT = { bold: true, color: { argb: "FFFFFFFF" }, size: 16, name: "Calibri" };
-    const cols = ["CIFA#", "Item Description", "Category", "Total Project Qty", "Project Start", "Month 2 Need", "Month 3 Need", "Month 4 Need", "Month 5 Need", "Month 6 Need"];
+    const cols = ["CIFA#", "Item Description", "Category", "Total Project Qty", "Project Start", "Month 2 Need", "Month 3 Need", "Month 4 Need", "Month 5 Need", "Month 6 Need", "Shipped / Pulled", "Still Needed"];
     rep.projects.forEach((p, idx) => {
       const safe = (p.project_name || ("Project " + (idx + 1))).replace(/[\\/?*\[\]:]/g, " ").slice(0, 28);
       const ws = wb.addWorksheet(safe || ("Project " + (idx + 1)));
@@ -566,22 +566,26 @@ async function exportCustomerXLSX() {
       const agg = {};
       p.jbs.forEach(j => j.items.forEach(it => {
         const k = it.item_number;
-        if (!agg[k]) agg[k] = { item: it.item_number, desc: it.description || "", needed: 0 };
+        if (!agg[k]) agg[k] = { item: it.item_number, desc: it.description || "", needed: 0, shipped: 0 };
         agg[k].needed += it.needed;
+        agg[k].shipped += it.fulfilled;
       }));
       let r = 11;
       Object.values(agg).sort((a, b) => String(a.item).localeCompare(String(b.item), undefined, { numeric: true })).forEach(a => {
         const row = ws.getRow(r++);
         const numItem = /^\d+$/.test(String(a.item)) ? Number(a.item) : a.item;
+        const stillNeeded = a.needed - a.shipped;
         row.getCell(1).value = numItem; row.getCell(1).alignment = { horizontal: "center" };
         row.getCell(2).value = a.desc;
         row.getCell(3).value = "";
         row.getCell(4).value = a.needed;
         row.getCell(5).value = a.needed;
         for (let m = 6; m <= 10; m++) row.getCell(m).value = 0;
+        row.getCell(11).value = a.shipped; row.getCell(11).alignment = { horizontal: "right" };
+        row.getCell(12).value = stillNeeded; row.getCell(12).alignment = { horizontal: "right" };
       });
       ws.getColumn(1).width = 11; ws.getColumn(2).width = 52; ws.getColumn(3).width = 20;
-      for (let ci = 4; ci <= 10; ci++) ws.getColumn(ci).width = 14;
+      for (let ci = 4; ci <= 12; ci++) ws.getColumn(ci).width = 15;
     });
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
