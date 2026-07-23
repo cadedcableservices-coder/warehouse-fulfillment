@@ -416,9 +416,9 @@ async function getReport(db) {
     `SELECT p.id AS project_id, p.name AS project_name, p.priority AS project_priority,
             j.id AS jb_id, j.jb_number, j.priority AS jb_priority,
             l.item_number, l.description, l.qty_needed, l.qty_fulfilled
-     FROM projects p JOIN jbs j ON j.project_id=p.id
+     FROM projects p LEFT JOIN jbs j ON j.project_id=p.id
      LEFT JOIN jb_lines l ON l.jb_id=j.id
-     ORDER BY p.priority, j.priority, j.jb_number, l.item_number`
+     ORDER BY p.priority, p.name, j.priority, j.jb_number, l.item_number`
   ).all()).results || [];
   const projects = {}, totals = {};
   for (const r of jbRows) {
