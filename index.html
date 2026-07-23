@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Warehouse Fulfillment</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
   :root { --blue:#1f6feb; --green:#1a7f37; --red:#cf222e; --ink:#1c2128; --muted:#57606a; --line:#d0d7de; --bg:#f6f8fa; }
   * { box-sizing: border-box; }
@@ -121,8 +122,9 @@
         <button id="rb-status" class="big primary" onclick="repView('status')">JB Status</button>
         <button id="rb-inv" class="big neutral" onclick="repView('inventory')">Inventory</button>
         <button id="rb-hist" class="big neutral" onclick="repView('history')">History</button>
-        <button class="big neutral" onclick="exportCSV()" style="margin-left:auto">⬇ Export CSV</button>
-        <button class="big neutral" onclick="exportCustomerCSV()">⬇ Customer template</button>
+        <button class="big neutral" onclick="exportInternalXLSX()" style="margin-left:auto">⬇ Excel (internal)</button>
+        <button class="big neutral" onclick="exportCustomerXLSX()">⬇ Customer template</button>
+        <button class="big neutral" onclick="exportCSV()">⬇ CSV</button>
         <button class="big neutral" onclick="window.print()">🖨 Print</button>
       </div>
       <div id="reportBody"><p class="muted">Loading…</p></div>
@@ -536,6 +538,119 @@ async function exportCustomerCSV() {
     });
     downloadCSV("customer_bom_template_" + stamp() + ".csv", rows);
     flash("Customer-template CSV downloaded.", "info");
+  } catch (e) { flash(e.message, "err"); }
+}
+// Export as a COLORED Excel workbook matching the customer's Construction BOM Template.
+async function exportCustomerXLSX() {
+  try {
+    if (typeof ExcelJS === "undefined") { flash("Excel export library is still loading — try again in a few seconds.", "err"); return; }
+    const rep = await api("/report");
+    const wb = new ExcelJS.Workbook();
+    const HDR_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
+    const HDR_FONT = { bold: true, color: { argb: "FFFFFFFF" }, size: 16, name: "Calibri" };
+    const cols = ["CIFA#", "Item Description", "Category", "Total Project Qty", "Project Start", "Month 2 Need", "Month 3 Need", "Month 4 Need", "Month 5 Need", "Month 6 Need"];
+    rep.projects.forEach((p, idx) => {
+      const safe = (p.project_name || ("Project " + (idx + 1))).replace(/[\\/?*\[\]:]/g, " ").slice(0, 28);
+      const ws = wb.addWorksheet(safe || ("Project " + (idx + 1)));
+      const labels = [["BP", ""], ["Location / Org Code", ""], ["Project Name", p.project_name || ""], ["Project Number", ""], ["Location / Org Code", ""], ["Project Start Date", ""]];
+      labels.forEach((l, i) => {
+        const row = ws.getRow(i + 1);
+        row.getCell(1).value = l[0]; row.getCell(2).value = l[1];
+        row.getCell(1).fill = HDR_FILL; row.getCell(1).font = HDR_FONT;
+      });
+      [["G1", "Total Miles"], ["G2", "Aerial Miles:"], ["G3", "Underground Miles:"]].forEach(([a, t]) => {
+        const c = ws.getCell(a); c.value = t; c.fill = HDR_FILL; c.font = HDR_FONT; c.alignment = { horizontal: "center" };
+      });
+      const hr = ws.getRow(10);
+      cols.forEach((t, i) => { const c = hr.getCell(i + 1); c.value = t; c.fill = HDR_FILL; c.font = HDR_FONT; });
+      const agg = {};
+      p.jbs.forEach(j => j.items.forEach(it => {
+        const k = it.item_number;
+        if (!agg[k]) agg[k] = { item: it.item_number, desc: it.description || "", needed: 0 };
+        agg[k].needed += it.needed;
+      }));
+      let r = 11;
+      Object.values(agg).sort((a, b) => String(a.item).localeCompare(String(b.item), undefined, { numeric: true })).forEach(a => {
+        const row = ws.getRow(r++);
+        const numItem = /^\d+$/.test(String(a.item)) ? Number(a.item) : a.item;
+        row.getCell(1).value = numItem; row.getCell(1).alignment = { horizontal: "center" };
+        row.getCell(2).value = a.desc;
+        row.getCell(3).value = "";
+        row.getCell(4).value = a.needed;
+        row.getCell(5).value = a.needed;
+        for (let m = 6; m <= 10; m++) row.getCell(m).value = 0;
+      });
+      ws.getColumn(1).width = 11; ws.getColumn(2).width = 52; ws.getColumn(3).width = 20;
+      for (let ci = 4; ci <= 10; ci++) ws.getColumn(ci).width = 14;
+    });
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "customer_bom_" + stamp() + ".xlsx"; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    flash("Customer-format Excel downloaded.", "info");
+  } catch (e) { flash(e.message, "err"); }
+}
+// Internal Excel report: big-picture Overview tab first, then one tab per JB — styled like the website.
+async function exportInternalXLSX() {
+  try {
+    if (typeof ExcelJS === "undefined") { flash("Excel export library is still loading — try again in a few seconds.", "err"); return; }
+    const rep = await api("/report");
+    const wb = new ExcelJS.Workbook();
+    const TITLE_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0D1117" } };
+    const TITLE_FONT = { bold: true, color: { argb: "FFFFFFFF" }, size: 14, name: "Calibri" };
+    const SUB_FONT = { bold: true, size: 12, name: "Calibri" };
+    const HEAD_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE9EDF2" } };
+    const HEAD_FONT = { bold: true, color: { argb: "FF1C2128" }, size: 11, name: "Calibri" };
+    const thin = { style: "thin", color: { argb: "FFCCCCCC" } };
+    const border = { top: thin, left: thin, bottom: thin, right: thin };
+    const sheetName = s => (String(s).replace(/[\\/?*\[\]:]/g, " ").slice(0, 28) || "Sheet");
+    const putHeader = (ws, rowNum, arr) => arr.forEach((h, i) => { const c = ws.getCell(rowNum, i + 1); c.value = h; c.fill = HEAD_FILL; c.font = HEAD_FONT; c.border = border; });
+    rep.projects.forEach(p => {
+      // ---- big-picture Overview tab (added first) ----
+      const ov = wb.addWorksheet(sheetName("Overview"), { views: [{ state: "frozen", ySplit: 1 }] });
+      ov.mergeCells(1, 1, 1, 5);
+      const t = ov.getCell(1, 1); t.value = p.project_name + " — Overview"; t.fill = TITLE_FILL; t.font = TITLE_FONT;
+      let row = 3;
+      ov.getCell(row, 1).value = "JB Completion"; ov.getCell(row, 1).font = SUB_FONT; row++;
+      putHeader(ov, row, ["JB", "Items done", "Qty shipped", "Qty still needed", "% complete"]); row++;
+      p.jbs.forEach(jb => {
+        let n = 0, f = 0, done = 0; jb.items.forEach(it => { n += it.needed; f += it.fulfilled; if (it.remaining <= 0) done++; });
+        const tot = jb.items.length, pct = tot ? Math.round(done / tot * 100) : 100;
+        [jb.jb_number, done + " / " + tot, f, n - f, pct + "%"].forEach((v, i) => { const c = ov.getCell(row, i + 1); c.value = v; c.border = border; if (i >= 2 && i <= 3) c.alignment = { horizontal: "right" }; });
+        row++;
+      });
+      row += 1;
+      ov.getCell(row, 1).value = "Whole-project totals"; ov.getCell(row, 1).font = SUB_FONT; row++;
+      putHeader(ov, row, ["Item #", "Description", "Needed", "Shipped", "Still needed"]); row++;
+      (p.totals || []).forEach(t2 => {
+        [t2.item_number, t2.description || "", t2.needed, t2.fulfilled, t2.remaining].forEach((v, i) => { const c = ov.getCell(row, i + 1); c.value = v; c.border = border; if (i >= 2) c.alignment = { horizontal: "right" }; });
+        row++;
+      });
+      [16, 52, 14, 14, 14].forEach((w, i) => ov.getColumn(i + 1).width = w);
+      // ---- one tab per JB ----
+      p.jbs.forEach(jb => {
+        const ws = wb.addWorksheet(sheetName("JB " + jb.jb_number), { views: [{ state: "frozen", ySplit: 2 }] });
+        ws.mergeCells(1, 1, 1, 5);
+        const tt = ws.getCell(1, 1); tt.value = "JB " + jb.jb_number + " — " + p.project_name; tt.fill = TITLE_FILL; tt.font = TITLE_FONT;
+        putHeader(ws, 2, ["Item #", "Description", "Needed", "Shipped", "Still needed"]);
+        let r = 3;
+        jb.items.forEach(it => {
+          [it.item_number, it.description || "", it.needed, it.fulfilled, it.remaining].forEach((v, i) => { const c = ws.getCell(r, i + 1); c.value = v; c.border = border; if (i >= 2) c.alignment = { horizontal: "right" }; });
+          if (it.remaining <= 0) ws.getCell(r, 5).value = "shipped";
+          r++;
+        });
+        [14, 52, 12, 12, 14].forEach((w, i) => ws.getColumn(i + 1).width = w);
+      });
+    });
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "warehouse_report_" + stamp() + ".xlsx"; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    flash("Internal Excel report downloaded.", "info");
   } catch (e) { flash(e.message, "err"); }
 }
 function repView(v){
