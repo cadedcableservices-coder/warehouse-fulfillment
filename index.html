@@ -122,6 +122,7 @@
         <button id="rb-inv" class="big neutral" onclick="repView('inventory')">Inventory</button>
         <button id="rb-hist" class="big neutral" onclick="repView('history')">History</button>
         <button class="big neutral" onclick="exportCSV()" style="margin-left:auto">⬇ Export CSV</button>
+        <button class="big neutral" onclick="exportCustomerCSV()">⬇ Customer template</button>
         <button class="big neutral" onclick="window.print()">🖨 Print</button>
       </div>
       <div id="reportBody"><p class="muted">Loading…</p></div>
@@ -501,6 +502,40 @@ async function exportCSV() {
       downloadCSV("jb_status_" + stamp() + ".csv", rows);
     }
     flash("CSV downloaded.", "info");
+  } catch (e) { flash(e.message, "err"); }
+}
+// Export in the CUSTOMER'S Construction BOM Template layout (per project).
+async function exportCustomerCSV() {
+  try {
+    const rep = await api("/report");
+    const rows = [];
+    const cols = ["CIFA#","Item Description","Category","Total Project Qty","Project Start","Month 2 Need","Month 3 Need","Month 4 Need","Month 5 Need","Month 6 Need"];
+    rep.projects.forEach((p, idx) => {
+      if (idx > 0) rows.push([]);
+      rows.push(["BP", ""]);
+      rows.push(["Location / Org Code", ""]);
+      rows.push(["Project Name", p.project_name]);
+      rows.push(["Project Number", ""]);
+      rows.push(["Location / Org Code", ""]);
+      rows.push(["Project Start Date", ""]);
+      rows.push(["Aerial Miles", ""]);
+      rows.push(["Underground Miles", ""]);
+      rows.push(["Total Miles", ""]);
+      rows.push([]);
+      rows.push(cols);
+      // aggregate to project-level total need per CIFA (across all JBs)
+      const agg = {};
+      p.jbs.forEach(j => j.items.forEach(it => {
+        const k = it.item_number;
+        if (!agg[k]) agg[k] = { item: it.item_number, desc: it.description || "", needed: 0 };
+        agg[k].needed += it.needed;
+      }));
+      Object.values(agg)
+        .sort((a, b) => String(a.item).localeCompare(String(b.item), undefined, { numeric: true }))
+        .forEach(a => rows.push([a.item, a.desc, "", a.needed, a.needed, 0, 0, 0, 0, 0]));
+    });
+    downloadCSV("customer_bom_template_" + stamp() + ".csv", rows);
+    flash("Customer-template CSV downloaded.", "info");
   } catch (e) { flash(e.message, "err"); }
 }
 function repView(v){
