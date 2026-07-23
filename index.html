@@ -46,10 +46,20 @@
   .print-title { display:none; }
   @media print {
     header, .tabs, .noprint { display:none !important; }
-    body { background:#fff; }
-    .card { border:none; padding:0; }
-    .print-title { display:block; }
-    main { max-width:none; }
+    body { background:#fff; color:#000; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    main { max-width:none; padding:0; }
+    .card { border:none; padding:0; margin:0 0 14px; box-shadow:none; }
+    .print-title { display:block; border-bottom:2px solid #111; margin:0 0 14px; padding-bottom:8px; }
+    .print-title h2 { margin:2px 0 0; font-size:20px; }
+    .print-brand { font-size:11px; letter-spacing:.10em; text-transform:uppercase; color:#555; font-weight:700; }
+    h3 { page-break-after:avoid; margin:14px 0 6px; }
+    table { page-break-inside:auto; border-collapse:collapse; width:100%; font-size:12px; }
+    thead { display:table-header-group; }         /* repeat column headers on each printed page */
+    tr { page-break-inside:avoid; }
+    th { border-bottom:1.5px solid #111; text-align:left; color:#000; background:#eee; }
+    td, th { padding:5px 8px; border-bottom:1px solid #ccc; }
+    .jbcard { border:1px solid #999; border-radius:6px; padding:10px; margin-bottom:10px; page-break-inside:avoid; }
+    .pill { border:1px solid #999; }
   }
 </style>
 </head>
@@ -111,7 +121,8 @@
         <button id="rb-status" class="big primary" onclick="repView('status')">JB Status</button>
         <button id="rb-inv" class="big neutral" onclick="repView('inventory')">Inventory</button>
         <button id="rb-hist" class="big neutral" onclick="repView('history')">History</button>
-        <button class="big neutral" onclick="window.print()" style="margin-left:auto">🖨 Print</button>
+        <button class="big neutral" onclick="exportCSV()" style="margin-left:auto">⬇ Export CSV</button>
+        <button class="big neutral" onclick="window.print()">🖨 Print</button>
       </div>
       <div id="reportBody"><p class="muted">Loading…</p></div>
     </section>
@@ -279,7 +290,8 @@ async function runAllocation() {
 }
 
 function printTitle(runId) {
-  return '<div class="print-title"><h2>Allocation Approval — where each item is going</h2>'
+  return '<div class="print-title"><div class="print-brand">Cable Services · Warehouse Fulfillment</div>'
+    + '<h2>Allocation Approval — where each item is going</h2>'
     + '<p class="muted">Run #' + runId + ' — ' + new Date().toLocaleString() + (WHO?(" — prepared by "+esc(WHO)):"") + '</p>'
     + '<p style="margin:6px 0 14px">Approved by: __________________________   Date: ______________</p></div>';
 }
@@ -450,6 +462,47 @@ function bar(pct, label){
   return '<div style="margin:6px 0 16px"><div class="muted" style="margin-bottom:4px">' + label + ': <b>' + pct + '%</b></div>'
     + '<div style="background:#eaeef2;border-radius:20px;height:14px;overflow:hidden"><div style="width:' + pct + '%;height:100%;background:' + (pct>=100?"var(--green)":"var(--blue)") + '"></div></div></div>';
 }
+function printBrand(title, sub) {
+  return '<div class="print-title"><div class="print-brand">Cable Services · Warehouse Fulfillment</div>'
+    + '<h2>' + title + '</h2><p class="muted" style="margin:2px 0 0">' + (sub || new Date().toLocaleString()) + '</p></div>';
+}
+// ---- CSV export ----
+function toCSV(rows) {
+  return rows.map(r => r.map(c => {
+    const s = c == null ? "" : String(c);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(",")).join("\r\n");
+}
+function downloadCSV(name, rows) {
+  const blob = new Blob(["﻿" + toCSV(rows)], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function stamp() { const d = new Date(); return "" + d.getFullYear() + ("0"+(d.getMonth()+1)).slice(-2) + ("0"+d.getDate()).slice(-2); }
+async function exportCSV() {
+  try {
+    if (REP_VIEW === "inventory") {
+      const d = await api("/inventory");
+      const rows = [["Item #", "Description", "On hand"]];
+      d.items.forEach(i => rows.push([i.item_number, i.description || "", i.qty_available]));
+      downloadCSV("inventory_" + stamp() + ".csv", rows);
+    } else if (REP_VIEW === "history") {
+      const d = await api("/history");
+      const rows = [["Run #", "When", "By", "JBs", "Item lines", "Total qty"]];
+      d.runs.forEach(r => rows.push([r.id, r.created_at, r.created_by || "", r.jb_count, r.line_count, r.total_qty]));
+      downloadCSV("history_" + stamp() + ".csv", rows);
+    } else {
+      const rep = await api("/report");
+      const rows = [["Project", "JB", "Item #", "Description", "Needed", "Shipped", "Still needed"]];
+      rep.projects.forEach(p => p.jbs.forEach(j => j.items.forEach(it =>
+        rows.push([p.project_name, j.jb_number, it.item_number, it.description || "", it.needed, it.fulfilled, it.remaining]))));
+      downloadCSV("jb_status_" + stamp() + ".csv", rows);
+    }
+    flash("CSV downloaded.", "info");
+  } catch (e) { flash(e.message, "err"); }
+}
 function repView(v){
   REP_VIEW = v;
   [["rb-status","status"],["rb-inv","inventory"],["rb-hist","history"]].forEach(([id,val])=>{
@@ -465,7 +518,7 @@ async function loadStatus() {
   try {
     const rep = await api("/report");
     if (!rep.projects.length) { el.innerHTML = '<p class="muted">No projects yet.</p>'; return; }
-    let h = '<div class="print-title"><h2>Project Status Report</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
+    let h = printBrand("Project Status Report");
     for (const p of rep.projects) {
       let itemsDoneP=0, itemsTotP=0;
       for (const jb of p.jbs){ for (const it of jb.items){ itemsTotP++; if (it.remaining<=0) itemsDoneP++; } }
@@ -534,7 +587,7 @@ async function loadInventory() {
   const el = document.getElementById("reportBody"); el.innerHTML = '<p class="muted">Loading…</p>';
   try {
     const d = await api("/inventory");
-    let h = '<div class="print-title"><h2>On-hand Inventory</h2><p class="muted">' + new Date().toLocaleString() + '</p></div>';
+    let h = printBrand("On-hand Inventory");
     h += '<div class="card"><h2>Live on-hand inventory</h2>';
     h += '<p class="sub">Updates automatically as pick lists are approved. You can also adjust quantities by hand here.</p>';
     // add-item row
@@ -607,7 +660,7 @@ async function viewRun(id) {
     const res = await api("/run/" + id);
     const by = res.run && res.run.created_by ? res.run.created_by : "";
     let h = '<div class="card">';
-    h += '<div class="print-title"><h2>Allocation Record — where each item went</h2>'
+    h += '<div class="print-title"><div class="print-brand">Cable Services · Warehouse Fulfillment</div><h2>Allocation Record — where each item went</h2>'
       + '<p class="muted">Run #' + id + ' — ' + esc(res.run?res.run.created_at:"") + (by?(" — by "+esc(by)):"") + '</p></div>';
     h += '<div class="row noprint" style="justify-content:space-between"><h2>Run #' + id + ' — ' + esc(res.run?res.run.created_at:"") + '</h2><button class="big neutral" onclick="window.print()">🖨 Print</button></div>';
     if (!res.pick_list.length) h += '<p class="muted">No lines.</p>';
