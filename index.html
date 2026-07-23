@@ -123,7 +123,7 @@
         <button id="rb-inv" class="big neutral" onclick="repView('inventory')">Inventory</button>
         <button id="rb-hist" class="big neutral" onclick="repView('history')">History</button>
         <button class="big neutral" onclick="exportInternalXLSX()" style="margin-left:auto">⬇ Excel (internal)</button>
-        <button class="big neutral" onclick="exportCustomerXLSX()">⬇ Customer template</button>
+        <span id="custBtns" class="row" style="gap:6px"></span>
         <button class="big neutral" onclick="exportCSV()">⬇ CSV</button>
         <button class="big neutral" onclick="window.print()">🖨 Print</button>
       </div>
@@ -384,7 +384,7 @@ async function commitRun(runId) {
 
 // ---------- state / setup ----------
 async function refreshState() {
-  try { STATE = await api("/state"); renderSetup();
+  try { STATE = await api("/state"); renderSetup(); renderCustomerButtons();
     const inv = STATE.inventory;
     if (inv && inv.items) document.getElementById("invStatus").innerHTML =
       "Current stored inventory: <b>" + inv.items + "</b> items (updated " + (inv.updated||"—") + ")";
@@ -541,15 +541,25 @@ async function exportCustomerCSV() {
   } catch (e) { flash(e.message, "err"); }
 }
 // Export as a COLORED Excel workbook matching the customer's Construction BOM Template.
-async function exportCustomerXLSX() {
+function renderCustomerButtons() {
+  const el = document.getElementById("custBtns"); if (!el) return;
+  const projs = (STATE && STATE.projects) ? STATE.projects : [];
+  el.innerHTML = projs.map(p => {
+    const nm = String(p.name || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    return '<button class="big neutral" onclick="exportCustomerXLSX(\'' + nm + '\')">⬇ Cust: ' + esc(p.name) + '</button>';
+  }).join("");
+}
+async function exportCustomerXLSX(projectName) {
   try {
     if (typeof ExcelJS === "undefined") { flash("Excel export library is still loading — try again in a few seconds.", "err"); return; }
     const rep = await api("/report");
+    const projects = projectName ? rep.projects.filter(p => p.project_name === projectName) : rep.projects;
+    if (projectName && !projects.length) { flash("No project named " + projectName + ".", "err"); return; }
     const wb = new ExcelJS.Workbook();
     const HDR_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
     const HDR_FONT = { bold: true, color: { argb: "FFFFFFFF" }, size: 16, name: "Calibri" };
     const cols = ["CIFA#", "Item Description", "Category", "Total Project Qty", "Project Start", "Month 2 Need", "Month 3 Need", "Month 4 Need", "Month 5 Need", "Month 6 Need", "Shipped / Pulled", "Still Needed"];
-    rep.projects.forEach((p, idx) => {
+    projects.forEach((p, idx) => {
       const safe = (p.project_name || ("Project " + (idx + 1))).replace(/[\\/?*\[\]:]/g, " ").slice(0, 28);
       const ws = wb.addWorksheet(safe || ("Project " + (idx + 1)));
       const labels = [["BP", ""], ["Location / Org Code", ""], ["Project Name", p.project_name || ""], ["Project Number", ""], ["Location / Org Code", ""], ["Project Start Date", ""]];
@@ -591,9 +601,10 @@ async function exportCustomerXLSX() {
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "customer_bom_" + stamp() + ".xlsx"; document.body.appendChild(a); a.click(); a.remove();
+    const nameTag = projectName ? projectName.replace(/[^A-Za-z0-9]+/g, "_") : "all";
+    a.href = url; a.download = "customer_bom_" + nameTag + "_" + stamp() + ".xlsx"; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    flash("Customer-format Excel downloaded.", "info");
+    flash("Customer Excel downloaded" + (projectName ? " — " + projectName : "") + ".", "info");
   } catch (e) { flash(e.message, "err"); }
 }
 // Internal Excel report: big-picture Overview tab first, then one tab per JB — styled like the website.
@@ -611,14 +622,30 @@ async function exportInternalXLSX() {
     const border = { top: thin, left: thin, bottom: thin, right: thin };
     const sheetName = s => (String(s).replace(/[\\/?*\[\]:]/g, " ").slice(0, 28) || "Sheet");
     const putHeader = (ws, rowNum, arr) => arr.forEach((h, i) => { const c = ws.getCell(rowNum, i + 1); c.value = h; c.fill = HEAD_FILL; c.font = HEAD_FONT; c.border = border; });
+    // ---- Tab 1: All Projects big picture ----
+    const all = wb.addWorksheet("All Projects", { views: [{ state: "frozen", ySplit: 1 }] });
+    all.mergeCells(1, 1, 1, 6);
+    const at = all.getCell(1, 1); at.value = "All Projects — Big Picture"; at.fill = TITLE_FILL; at.font = TITLE_FONT;
+    let arow = 3;
+    all.getCell(arow, 1).value = "Project Summary"; all.getCell(arow, 1).font = SUB_FONT; arow++;
+    putHeader(all, arow, ["Project", "JBs", "Line items done", "Total needed", "Shipped/Pulled", "Still needed"]); arow++;
     rep.projects.forEach(p => {
-      // ---- big-picture Overview tab (added first) ----
-      const ov = wb.addWorksheet(sheetName("Overview"), { views: [{ state: "frozen", ySplit: 1 }] });
+      let n = 0, f = 0, itot = 0, idone = 0;
+      p.jbs.forEach(jb => jb.items.forEach(it => { n += it.needed; f += it.fulfilled; itot++; if (it.remaining <= 0) idone++; }));
+      [p.project_name, p.jbs.length, idone + " / " + itot, n, f, n - f].forEach((v, i) => { const c = all.getCell(arow, i + 1); c.value = v; c.border = border; if (i >= 3) c.alignment = { horizontal: "right" }; });
+      arow++;
+    });
+    [22, 8, 16, 16, 16, 16].forEach((w, i) => all.getColumn(i + 1).width = w);
+
+    // ---- per project: an overview tab (like the website total) + one tab per JB ----
+    rep.projects.forEach(p => {
+      const ov = wb.addWorksheet(sheetName(p.project_name), { views: [{ state: "frozen", ySplit: 1 }] });
       ov.mergeCells(1, 1, 1, 5);
       const t = ov.getCell(1, 1); t.value = p.project_name + " — Overview"; t.fill = TITLE_FILL; t.font = TITLE_FONT;
       let row = 3;
       ov.getCell(row, 1).value = "JB Completion"; ov.getCell(row, 1).font = SUB_FONT; row++;
       putHeader(ov, row, ["JB", "Items done", "Qty shipped", "Qty still needed", "% complete"]); row++;
+      if (!p.jbs.length) { ov.getCell(row, 1).value = "No JBs in this project yet."; row++; }
       p.jbs.forEach(jb => {
         let n = 0, f = 0, done = 0; jb.items.forEach(it => { n += it.needed; f += it.fulfilled; if (it.remaining <= 0) done++; });
         const tot = jb.items.length, pct = tot ? Math.round(done / tot * 100) : 100;
@@ -633,7 +660,7 @@ async function exportInternalXLSX() {
         row++;
       });
       [16, 52, 14, 14, 14].forEach((w, i) => ov.getColumn(i + 1).width = w);
-      // ---- one tab per JB ----
+      // one tab per JB in this project
       p.jbs.forEach(jb => {
         const ws = wb.addWorksheet(sheetName("JB " + jb.jb_number), { views: [{ state: "frozen", ySplit: 2 }] });
         ws.mergeCells(1, 1, 1, 5);
